@@ -1,9 +1,35 @@
+import { readFileSync } from 'node:fs';
 import fetch from 'node-fetch';
 import { z } from 'zod';
 
 // Environment configuration
-const BITRIX24_WEBHOOK_URL = process.env.BITRIX24_WEBHOOK_URL || 
-  'https://sviluppofranchising.bitrix24.it/rest/27/wwugdez6m774803q/';
+function readEnvFileValue(name: string): string | undefined {
+  try {
+    const envFile = readFileSync(`${process.cwd()}/.env`, 'utf8');
+    const line = envFile
+      .split(/\r?\n/)
+      .find((entry) => entry.trim().startsWith(`${name}=`));
+
+    if (!line) {
+      return undefined;
+    }
+
+    const value = line.slice(line.indexOf('=') + 1).trim();
+    return value.replace(/^['"]|['"]$/g, '');
+  } catch {
+    return undefined;
+  }
+}
+
+function getBitrix24WebhookUrl(): string {
+  const webhookUrl = process.env.BITRIX24_WEBHOOK_URL || readEnvFileValue('BITRIX24_WEBHOOK_URL');
+
+  if (!webhookUrl) {
+    throw new Error('BITRIX24_WEBHOOK_URL is required. Set it in the environment or in a local .env file.');
+  }
+
+  return webhookUrl;
+}
 
 // Validation schemas
 const BitrixResponseSchema = z.object({
@@ -107,13 +133,42 @@ export interface BitrixCompany {
   DATE_MODIFY?: string;
 }
 
+export interface BitrixDepartment {
+  ID?: string | number;
+  NAME?: string;
+  SORT?: string | number;
+  PARENT?: string | number;
+  UF_HEAD?: string | number;
+  [key: string]: any;
+}
+
+export type BitrixAiEngineCategory = 'text' | 'image' | 'audio' | 'call';
+
+export interface BitrixAiEngineSettings {
+  code_alias?: string;
+  model_context_type?: 'token' | 'symbol';
+  model_context_limit?: number;
+  [key: string]: any;
+}
+
+export interface BitrixAiEngine {
+  id?: number;
+  app_code?: string | null;
+  name: string;
+  code: string;
+  category: BitrixAiEngineCategory;
+  completions_url: string;
+  settings?: BitrixAiEngineSettings;
+  date_create?: number;
+}
+
 export class Bitrix24Client {
   private baseUrl: string;
   private requestCount = 0;
   private lastRequestTime = 0;
   private readonly RATE_LIMIT_DELAY = 500; // 500ms between requests (2 requests/second)
 
-  constructor(webhookUrl: string = BITRIX24_WEBHOOK_URL) {
+  constructor(webhookUrl: string = getBitrix24WebhookUrl()) {
     this.baseUrl = webhookUrl.replace(/\/$/, ''); // Remove trailing slash
   }
 
@@ -131,7 +186,11 @@ export class Bitrix24Client {
     this.requestCount++;
   }
 
-  private async makeRequest(method: string, params: Record<string, any> = {}): Promise<any> {
+  private async makeRequest(
+    method: string,
+    params: Record<string, any> = {},
+    includeMeta: boolean = false
+  ): Promise<any> {
     await this.enforceRateLimit();
 
     const url = `${this.baseUrl}/${method}`;
@@ -179,6 +238,11 @@ export class Bitrix24Client {
             Object.entries(value).forEach(([orderKey, orderValue]) => {
               body.append(`order[${orderKey}]`, String(orderValue));
             });
+          } else if (key === 'ORDER' && typeof value === 'object' && value !== null) {
+            // Chat APIs use uppercase ORDER in the REST contract.
+            Object.entries(value).forEach(([orderKey, orderValue]) => {
+              body.append(`ORDER[${orderKey}]`, String(orderValue));
+            });
           } else if (key === 'filter' && typeof value === 'object' && value !== null) {
             // Handle filter parameter specially
             Object.entries(value).forEach(([filterKey, filterValue]) => {
@@ -214,7 +278,7 @@ export class Bitrix24Client {
         throw new Error(`Bitrix24 API Error: ${parsed.error.error} - ${parsed.error.error_description}`);
       }
 
-      return parsed.result;
+      return includeMeta ? parsed : parsed.result;
     } catch (error) {
       console.error(`Bitrix24 API Error [${method}]:`, error);
       throw error;
@@ -238,6 +302,121 @@ export class Bitrix24Client {
 
   async listContacts(params: { start?: number; filter?: Record<string, any> } = {}): Promise<BitrixContact[]> {
     return await this.makeRequest('crm.contact.list', params);
+  }
+
+  // AI Engine Methods
+  async registerAiEngine(engine: {
+    name: string;
+    code: string;
+    category: BitrixAiEngineCategory;
+    completionsUrl: string;
+    settings?: BitrixAiEngineSettings;
+  }): Promise<number> {
+    const result = await this.makeRequest('ai.engine.register', {
+      name: engine.name,
+      code: engine.code,
+      category: engine.category,
+      completions_url: engine.completionsUrl,
+      settings: engine.settings
+    });
+
+    return Number(result);
+  }
+
+  async listAiEngines(params: {
+    filter?: Record<string, any>;
+    limit?: number;
+  } = {}): Promise<BitrixAiEngine[]> {
+    return await this.makeRequest('ai.engine.list', params);
+  }
+
+  async unregisterAiEngine(code: string): Promise<boolean> {
+    const result = await this.makeRequest('ai.engine.unregister', { code });
+    return result === true || result === 1 || result === '1';
+  }
+
+  // Chat / IM Methods
+  async getChatId(entityType: string, entityId: string): Promise<any> {
+    return await this.makeRequest('im.chat.get', {
+      ENTITY_TYPE: entityType,
+      ENTITY_ID: entityId
+    });
+  }
+
+  async getDialog(dialogId: string): Promise<any> {
+    return await this.makeRequest('im.dialog.get', {
+      DIALOG_ID: dialogId
+    });
+  }
+
+  async listRecentDialogs(options: {
+    limit?: number;
+    offset?: number;
+    lastMessageDate?: string;
+    unreadOnly?: boolean;
+    parseText?: boolean;
+    getOriginalText?: boolean;
+    skipOpenLines?: boolean;
+    skipDialog?: boolean;
+    skipChat?: boolean;
+    onlyCopilot?: boolean;
+    onlyChannel?: boolean;
+  } = {}): Promise<any> {
+    const params: Record<string, any> = {
+      LIMIT: options.limit || 20,
+      OFFSET: options.offset || 0
+    };
+
+    if (options.lastMessageDate) params.LAST_MESSAGE_DATE = options.lastMessageDate;
+    if (options.unreadOnly !== undefined) params.UNREAD_ONLY = options.unreadOnly ? 'Y' : 'N';
+    if (options.parseText !== undefined) params.PARSE_TEXT = options.parseText ? 'Y' : 'N';
+    if (options.getOriginalText !== undefined) params.GET_ORIGINAL_TEXT = options.getOriginalText ? 'Y' : 'N';
+    if (options.skipOpenLines !== undefined) params.SKIP_OPENLINES = options.skipOpenLines ? 'Y' : 'N';
+    if (options.skipDialog !== undefined) params.SKIP_DIALOG = options.skipDialog ? 'Y' : 'N';
+    if (options.skipChat !== undefined) params.SKIP_CHAT = options.skipChat ? 'Y' : 'N';
+    if (options.onlyCopilot !== undefined) params.ONLY_COPILOT = options.onlyCopilot ? 'Y' : 'N';
+    if (options.onlyChannel !== undefined) params.ONLY_CHANNEL = options.onlyChannel ? 'Y' : 'N';
+
+    return await this.makeRequest('im.recent.list', params);
+  }
+
+  async getDialogMessages(dialogId: string, options: {
+    limit?: number;
+    lastId?: number;
+    firstId?: number;
+  } = {}): Promise<any> {
+    const params: Record<string, any> = {
+      DIALOG_ID: dialogId,
+      LIMIT: Math.min(options.limit || 20, 50)
+    };
+
+    if (options.lastId !== undefined) params.LAST_ID = options.lastId;
+    if (options.firstId !== undefined) params.FIRST_ID = options.firstId;
+
+    return await this.makeRequest('im.dialog.messages.get', params);
+  }
+
+  async searchDialogMessages(chatId: number | string, searchMessage: string, options: {
+    limit?: number;
+    lastId?: number;
+    dateFrom?: string;
+    dateTo?: string;
+    date?: string;
+    orderDirection?: 'ASC' | 'DESC';
+  } = {}): Promise<any> {
+    const params: Record<string, any> = {
+      CHAT_ID: String(chatId).replace(/^chat/i, ''),
+      SEARCH_MESSAGE: searchMessage,
+      ORDER: { ID: options.orderDirection || 'DESC' },
+      LIMIT: Math.min(options.limit || 50, 200)
+    };
+
+    if (options.lastId !== undefined) params.LAST_ID = options.lastId;
+    if (options.dateFrom) params.DATE_FROM = options.dateFrom;
+    if (options.dateTo) params.DATE_TO = options.dateTo;
+    if (options.date) params.DATE = options.date;
+
+    return await this.makeRequest('im.dialog.messages.search', params);
   }
 
   // Helper method to get latest contacts with proper ordering
@@ -585,7 +764,62 @@ export class Bitrix24Client {
   }
 
   async getAllUsers(): Promise<any[]> {
-    return await this.makeRequest('user.get');
+    const users: any[] = [];
+    let start = 0;
+    const seenStarts = new Set<number>();
+
+    while (true) {
+      if (seenStarts.has(start)) {
+        throw new Error(`Bitrix24 user pagination returned repeated cursor: ${start}`);
+      }
+      seenStarts.add(start);
+
+      const response = await this.makeRequest('user.get', { start }, true);
+      const page = Array.isArray(response.result) ? response.result : [];
+      users.push(...page);
+
+      if (typeof response.next !== 'number') {
+        break;
+      }
+
+      start = response.next;
+    }
+
+    return users;
+  }
+
+  async getDepartments(params: Record<string, any> = {}): Promise<BitrixDepartment[]> {
+    return await this.makeRequest('department.get', params);
+  }
+
+  async getAllDepartments(): Promise<BitrixDepartment[]> {
+    const departments: BitrixDepartment[] = [];
+    let start = 0;
+    const seenStarts = new Set<number>();
+
+    while (true) {
+      if (seenStarts.has(start)) {
+        throw new Error(`Bitrix24 department pagination returned repeated cursor: ${start}`);
+      }
+      seenStarts.add(start);
+
+      const response = await this.makeRequest(
+        'department.get',
+        { start },
+        true
+      );
+
+      const page = Array.isArray(response.result) ? response.result : [];
+      departments.push(...page);
+
+      if (typeof response.next !== 'number') {
+        break;
+      }
+
+      start = response.next;
+    }
+
+    return departments;
   }
 
   async getUsersByIds(userIds: string[]): Promise<any[]> {

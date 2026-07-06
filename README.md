@@ -135,9 +135,39 @@ LOG_LEVEL=info
 4. Copy the webhook URL (format: `https://domain.bitrix24.com/rest/USER_ID/WEBHOOK_CODE/`)
 5. Set appropriate permissions for CRM and Tasks
 
-## 🔧 Claude Desktop Integration
+## 🔧 MCP Client Integration
 
-Add the following to your Claude Desktop configuration file:
+Build the stdio MCP server first:
+
+```bash
+npm run build
+```
+
+### LM Studio
+
+LM Studio supports MCP servers through `mcp.json` using the same `mcpServers` shape as Cursor. In LM Studio, open **Program** → **Install** → **Edit mcp.json**, then add:
+
+```json
+{
+  "mcpServers": {
+    "bitrix24": {
+      "command": "node",
+      "args": [
+        "/Users/eduardshubin/mcp/bitrix24-mcp-server/build/index.js"
+      ],
+      "env": {
+        "BITRIX24_WEBHOOK_URL": "https://your-domain.bitrix24.com/rest/USER_ID/WEBHOOK_CODE/"
+      }
+    }
+  }
+}
+```
+
+There is also a ready-to-edit template in `lmstudio_mcp.example.json`.
+
+### Claude Desktop
+
+Add the same server entry to your Claude Desktop configuration file:
 
 **macOS:** `~/Library/Application Support/Claude/claude_desktop_config.json`
 **Windows:** `%APPDATA%\Claude\claude_desktop_config.json`
@@ -154,6 +184,81 @@ Add the following to your Claude Desktop configuration file:
     }
   }
 }
+```
+
+### Docker
+
+A `Dockerfile` and `docker-compose.yml` are included, wrapping the Streamable HTTP server. It listens on port **`47365`** by default (intentionally non-standard, to avoid clashing with 80/3000/8080 on a shared host).
+
+```bash
+cp .env.example .env
+# edit .env: set BITRIX24_WEBHOOK_URL and MCP_AUTH_TOKEN
+
+docker compose up -d --build
+curl http://localhost:47365/health
+```
+
+To publish on a different host port, edit the `ports:` mapping in `docker-compose.yml` (`"HOST_PORT:47365"`) or run plain Docker:
+
+```bash
+docker build -t bitrix24-mcp-server .
+docker run -d --name bitrix24-mcp --restart unless-stopped \
+  --env-file .env \
+  -p 51234:47365 \
+  bitrix24-mcp-server
+```
+
+The container runs as a non-root user and has a built-in healthcheck hitting `/health`.
+
+### Streamable HTTP (self-hosted, remote clients)
+
+For remote access over plain HTTP requests (instead of a local stdio process), the server also exposes the [MCP Streamable HTTP transport](https://modelcontextprotocol.io/) at a single `/mcp` endpoint.
+
+**Run it:**
+
+```bash
+npm run build
+MCP_AUTH_TOKEN=your-long-random-secret npm run start:http
+```
+
+Environment variables (see `.env.example`):
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `PORT` | `3000` | HTTP port to listen on |
+| `HOST` | `0.0.0.0` | Interface to bind |
+| `MCP_AUTH_TOKEN` | _(unset)_ | Bearer token required on every `/mcp` request. **Set this before exposing the server on the internet** — without it, anyone who can reach the port can call your Bitrix24 tools. |
+| `MCP_ALLOWED_ORIGINS` | `*` | Comma-separated list of allowed CORS origins |
+
+This is the same entry point used in production (`server.js` → `build/httpServer.js`), so it works as-is behind IIS/Azure (`web.config`) or any reverse proxy (nginx, Caddy, etc.) — just proxy `/mcp` and `/health` to the Node process's port.
+
+**Endpoints:**
+- `POST /mcp` — send JSON-RPC requests (the client sends an `initialize` request first with no `Mcp-Session-Id` header; the server returns one to reuse on subsequent requests)
+- `GET /mcp` — opens the server-to-client SSE stream for an existing session (`Mcp-Session-Id` header required)
+- `DELETE /mcp` — terminates a session
+- `GET /health` — health check
+
+**Connecting a client:** point any MCP client that supports Streamable HTTP at `https://your-server/mcp` with header `Authorization: Bearer <MCP_AUTH_TOKEN>`. Example with `mcp-remote` (for clients that only speak stdio, like older Claude Desktop configs):
+
+```json
+{
+  "mcpServers": {
+    "bitrix24": {
+      "command": "npx",
+      "args": ["-y", "mcp-remote", "https://your-server/mcp", "--header", "Authorization: Bearer your-long-random-secret"]
+    }
+  }
+}
+```
+
+Quick manual test with `curl`:
+
+```bash
+curl -i -X POST https://your-server/mcp \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -H 'Authorization: Bearer your-long-random-secret' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"curl","version":"1.0.0"}}}'
 ```
 
 ## 📖 Usage Examples

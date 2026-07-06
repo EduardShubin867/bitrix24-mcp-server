@@ -1,5 +1,145 @@
 import { Tool } from '@modelcontextprotocol/sdk/types.js';
-import { bitrix24Client, BitrixContact, BitrixDeal, BitrixTask, BitrixLead, BitrixCompany } from '../bitrix24/client.js';
+import { bitrix24Client, BitrixAiEngineCategory, BitrixContact, BitrixDeal, BitrixTask, BitrixLead, BitrixCompany, BitrixDepartment } from '../bitrix24/client.js';
+
+type OrgUser = {
+  id: string;
+  fullName: string;
+  email?: string;
+  workPosition?: string;
+  active?: boolean;
+  departmentIds: string[];
+};
+
+type OrgDepartmentNode = {
+  id: string;
+  name: string;
+  parentId: string | null;
+  headId: string | null;
+  head: OrgUser | null;
+  users: OrgUser[];
+  children: OrgDepartmentNode[];
+  raw: BitrixDepartment;
+};
+
+function normalizeId(value: unknown): string | null {
+  if (value === undefined || value === null || value === '' || value === 0 || value === '0') {
+    return null;
+  }
+
+  return String(value);
+}
+
+function getFullUserName(user: Record<string, any>): string {
+  const fullName = [user.LAST_NAME, user.NAME, user.SECOND_NAME]
+    .filter(Boolean)
+    .join(' ')
+    .trim();
+
+  return fullName || user.EMAIL || `User ${user.ID}`;
+}
+
+function normalizeOrgUser(user: Record<string, any>): OrgUser {
+  const rawDepartments = Array.isArray(user.UF_DEPARTMENT) ? user.UF_DEPARTMENT : [];
+
+  return {
+    id: String(user.ID),
+    fullName: getFullUserName(user),
+    email: user.EMAIL,
+    workPosition: user.WORK_POSITION || user.PERSONAL_PROFESSION || undefined,
+    active: user.ACTIVE,
+    departmentIds: rawDepartments.map(String)
+  };
+}
+
+function buildOrgStructure(departments: BitrixDepartment[], users: Record<string, any>[]) {
+  const normalizedUsers = users.map(normalizeOrgUser);
+  const usersById = new Map(normalizedUsers.map(user => [user.id, user]));
+  const usersByDepartment = new Map<string, OrgUser[]>();
+
+  for (const user of normalizedUsers) {
+    for (const departmentId of user.departmentIds) {
+      const current = usersByDepartment.get(departmentId) || [];
+      current.push(user);
+      usersByDepartment.set(departmentId, current);
+    }
+  }
+
+  const nodesById = new Map<string, OrgDepartmentNode>();
+
+  for (const department of departments) {
+    const id = normalizeId(department.ID);
+    if (!id) continue;
+
+    const headId = normalizeId(department.UF_HEAD);
+    nodesById.set(id, {
+      id,
+      name: department.NAME || `Department ${id}`,
+      parentId: normalizeId(department.PARENT),
+      headId,
+      head: headId ? usersById.get(headId) || null : null,
+      users: usersByDepartment.get(id) || [],
+      children: [],
+      raw: department
+    });
+  }
+
+  const roots: OrgDepartmentNode[] = [];
+
+  for (const node of nodesById.values()) {
+    if (node.parentId && nodesById.has(node.parentId)) {
+      nodesById.get(node.parentId)!.children.push(node);
+    } else {
+      roots.push(node);
+    }
+  }
+
+  const reportingLines = [];
+
+  for (const node of nodesById.values()) {
+    if (!node.head) continue;
+
+    for (const user of node.users) {
+      if (user.id === node.head.id) continue;
+
+      reportingLines.push({
+        managerId: node.head.id,
+        managerName: node.head.fullName,
+        subordinateId: user.id,
+        subordinateName: user.fullName,
+        departmentId: node.id,
+        departmentName: node.name,
+        relation: 'department_head'
+      });
+    }
+
+    for (const child of node.children) {
+      if (!child.head || child.head.id === node.head.id) continue;
+
+      reportingLines.push({
+        managerId: node.head.id,
+        managerName: node.head.fullName,
+        subordinateId: child.head.id,
+        subordinateName: child.head.fullName,
+        departmentId: child.id,
+        departmentName: child.name,
+        relation: 'parent_department_head'
+      });
+    }
+  }
+
+  return {
+    generatedAt: new Date().toISOString(),
+    summary: {
+      departments: nodesById.size,
+      users: normalizedUsers.length,
+      usersWithoutDepartment: normalizedUsers.filter(user => user.departmentIds.length === 0).length,
+      reportingLines: reportingLines.length
+    },
+    departments: Array.from(nodesById.values()),
+    roots,
+    reportingLines
+  };
+}
 
 // Contact Management Tools
 export const createContactTool: Tool = {
@@ -382,6 +522,175 @@ export const getCompaniesFromDateRangeTool: Tool = {
       limit: { type: 'number', description: 'Maximum number of companies to return', default: 50 }
     },
     required: ['startDate']
+  }
+};
+
+// AI Engine Tools
+export const registerAiEngineTool: Tool = {
+  name: 'bitrix24_register_ai_engine',
+  description: 'Register a custom AI service in Bitrix24 CoPilot/AI engines',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      name: { type: 'string', description: 'Service name displayed in the Bitrix24 interface' },
+      code: { type: 'string', description: 'Unique service code. Allowed characters: A-Z, a-z, 0-9, hyphen, underscore' },
+      category: {
+        type: 'string',
+        enum: ['text', 'image', 'audio', 'call'],
+        description: 'AI service category',
+        default: 'text'
+      },
+      completionsUrl: {
+        type: 'string',
+        description: 'Public HTTPS endpoint URL that Bitrix24 calls for completions. It must return HTTP 200 during registration verification.'
+      },
+      settings: {
+        type: 'object',
+        description: 'Optional service settings, for example {"code_alias":"ChatGPT","model_context_type":"token","model_context_limit":15666}'
+      }
+    },
+    required: ['name', 'code', 'category', 'completionsUrl']
+  }
+};
+
+export const listAiEnginesTool: Tool = {
+  name: 'bitrix24_list_ai_engines',
+  description: 'List registered Bitrix24 AI services',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      filter: {
+        type: 'object',
+        description: 'Filter criteria, for example {"=CATEGORY":"text"} or {"=CODE":"acme_gpt"}'
+      },
+      limit: { type: 'number', description: 'Maximum number of services to return' }
+    }
+  }
+};
+
+export const unregisterAiEngineTool: Tool = {
+  name: 'bitrix24_unregister_ai_engine',
+  description: 'Remove a registered Bitrix24 AI service by code',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      code: { type: 'string', description: 'Character code of the service to remove' }
+    },
+    required: ['code']
+  }
+};
+
+// Chat / IM Tools
+export const getChatIdTool: Tool = {
+  name: 'bitrix24_get_chat_id',
+  description: 'Get a Bitrix24 chat/dialog identifier by linked entity type and entity ID, for example meeting or calendar event chats',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      entityType: {
+        type: 'string',
+        description: 'Bitrix24 chat entity type, for example CALENDAR, CALL, CRM, LINES, TASKS, SONET_GROUP'
+      },
+      entityId: {
+        type: 'string',
+        description: 'Linked entity ID used by Bitrix24 for this chat'
+      }
+    },
+    required: ['entityType', 'entityId']
+  }
+};
+
+export const getDialogTool: Tool = {
+  name: 'bitrix24_get_dialog',
+  description: 'Get Bitrix24 dialog/chat metadata by DIALOG_ID, for example chat123',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      dialogId: {
+        type: 'string',
+        description: 'Dialog ID, for example chat123 or a user ID for one-to-one dialogs'
+      }
+    },
+    required: ['dialogId']
+  }
+};
+
+export const listRecentDialogsTool: Tool = {
+  name: 'bitrix24_list_recent_dialogs',
+  description: 'List recent Bitrix24 dialogs/chats available to the webhook user',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      limit: { type: 'number', description: 'Maximum dialogs to return', default: 20 },
+      offset: { type: 'number', description: 'Offset for pagination', default: 0 },
+      lastMessageDate: { type: 'string', description: 'Optional date cursor from Bitrix24 recent list' },
+      unreadOnly: { type: 'boolean', description: 'Return only unread dialogs' },
+      parseText: { type: 'boolean', description: 'Return parsed message text when supported' },
+      getOriginalText: { type: 'boolean', description: 'Return original unparsed text when supported' },
+      skipOpenLines: { type: 'boolean', description: 'Skip open line dialogs' },
+      skipDialog: { type: 'boolean', description: 'Skip one-to-one dialogs' },
+      skipChat: { type: 'boolean', description: 'Skip group chats' },
+      onlyCopilot: { type: 'boolean', description: 'Return only CoPilot dialogs when supported' },
+      onlyChannel: { type: 'boolean', description: 'Return only channels when supported' }
+    }
+  }
+};
+
+export const getDialogMessagesTool: Tool = {
+  name: 'bitrix24_get_dialog_messages',
+  description: 'Get messages from a Bitrix24 dialog/chat, useful for reading meeting chat messages and CoPilot/GPT meeting summaries',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      dialogId: {
+        type: 'string',
+        description: 'Dialog ID, for example chat123'
+      },
+      limit: {
+        type: 'number',
+        description: 'Maximum messages to return. Bitrix24 limits this method to 50.',
+        default: 20
+      },
+      lastId: {
+        type: 'number',
+        description: 'Return messages older than this message ID'
+      },
+      firstId: {
+        type: 'number',
+        description: 'Return messages newer than this message ID'
+      }
+    },
+    required: ['dialogId']
+  }
+};
+
+export const searchDialogMessagesTool: Tool = {
+  name: 'bitrix24_search_dialog_messages',
+  description: 'Search messages in a Bitrix24 chat by text, useful for finding CoPilot/GPT meeting transcriptions or summaries',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      chatId: {
+        type: ['string', 'number'],
+        description: 'Numeric chat ID or dialog ID like chat123'
+      },
+      searchMessage: {
+        type: 'string',
+        description: 'Search text, for example "расшифровка", "итоги встречи", "CoPilot", or "GPT"'
+      },
+      limit: { type: 'number', description: 'Maximum messages to return', default: 50 },
+      lastId: { type: 'number', description: 'Continue search from this message ID' },
+      dateFrom: { type: 'string', description: 'Start date filter supported by Bitrix24' },
+      dateTo: { type: 'string', description: 'End date filter supported by Bitrix24' },
+      date: { type: 'string', description: 'Exact date filter supported by Bitrix24' },
+      orderDirection: {
+        type: 'string',
+        enum: ['ASC', 'DESC'],
+        description: 'Message ID sort direction',
+        default: 'DESC'
+      }
+    },
+    required: ['chatId', 'searchMessage']
   }
 };
 
@@ -812,6 +1121,30 @@ export const getAllUsersTool: Tool = {
   }
 };
 
+export const getDepartmentsTool: Tool = {
+  name: 'bitrix24_get_departments',
+  description: 'Get all Bitrix24 company departments with parent and department head fields',
+  inputSchema: {
+    type: 'object',
+    properties: {}
+  }
+};
+
+export const exportOrgStructureTool: Tool = {
+  name: 'bitrix24_export_org_structure',
+  description: 'Export company org structure with department hierarchy, heads, users, and reporting lines',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      includeInactiveUsers: {
+        type: 'boolean',
+        description: 'Include inactive users in the org structure',
+        default: false
+      }
+    }
+  }
+};
+
 export const resolveUserNamesTool: Tool = {
   name: 'bitrix24_resolve_user_names',
   description: 'Resolve user IDs to user names',
@@ -937,6 +1270,16 @@ export const allTools = [
   updateCompanyTool,
   getLatestCompaniesTool,
   getCompaniesFromDateRangeTool,
+  // AI Engine Tools
+  registerAiEngineTool,
+  listAiEnginesTool,
+  unregisterAiEngineTool,
+  // Chat / IM Tools
+  getChatIdTool,
+  getDialogTool,
+  listRecentDialogsTool,
+  getDialogMessagesTool,
+  searchDialogMessagesTool,
   searchCRMTool,
   validateWebhookTool,
   diagnosePermissionsTool,
@@ -962,6 +1305,8 @@ export const allTools = [
   // User Management Tools
   getUserTool,
   getAllUsersTool,
+  getDepartmentsTool,
+  exportOrgStructureTool,
   resolveUserNamesTool,
   getContactsWithUserNamesTool,
   getDealsWithUserNamesTool,
@@ -1189,6 +1534,98 @@ export async function executeToolCall(name: string, args: any): Promise<any> {
           args.limit || 50
         );
         return { success: true, companies: dateRangeCompanies };
+
+      case 'bitrix24_register_ai_engine':
+        const aiEngineId = await bitrix24Client.registerAiEngine({
+          name: args.name,
+          code: args.code,
+          category: args.category as BitrixAiEngineCategory,
+          completionsUrl: args.completionsUrl,
+          settings: args.settings
+        });
+        return {
+          success: true,
+          engineId: aiEngineId,
+          message: `AI engine registered with ID: ${aiEngineId}`
+        };
+
+      case 'bitrix24_list_ai_engines':
+        const aiEngines = await bitrix24Client.listAiEngines({
+          filter: args.filter,
+          limit: args.limit
+        });
+        return { success: true, engines: aiEngines };
+
+      case 'bitrix24_unregister_ai_engine':
+        const aiEngineRemoved = await bitrix24Client.unregisterAiEngine(args.code);
+        return {
+          success: true,
+          removed: aiEngineRemoved,
+          message: `AI engine ${args.code} unregistered successfully`
+        };
+
+      case 'bitrix24_get_chat_id':
+        const chatIdResult = await bitrix24Client.getChatId(args.entityType, args.entityId);
+        return {
+          success: true,
+          chat: chatIdResult,
+          message: `Chat lookup completed for ${args.entityType}:${args.entityId}`
+        };
+
+      case 'bitrix24_get_dialog':
+        const dialog = await bitrix24Client.getDialog(args.dialogId);
+        return {
+          success: true,
+          dialog,
+          message: `Dialog ${args.dialogId} retrieved`
+        };
+
+      case 'bitrix24_list_recent_dialogs':
+        const recentDialogs = await bitrix24Client.listRecentDialogs({
+          limit: args.limit,
+          offset: args.offset,
+          lastMessageDate: args.lastMessageDate,
+          unreadOnly: args.unreadOnly,
+          parseText: args.parseText,
+          getOriginalText: args.getOriginalText,
+          skipOpenLines: args.skipOpenLines,
+          skipDialog: args.skipDialog,
+          skipChat: args.skipChat,
+          onlyCopilot: args.onlyCopilot,
+          onlyChannel: args.onlyChannel
+        });
+        return {
+          success: true,
+          dialogs: recentDialogs,
+          message: `Recent dialogs retrieved`
+        };
+
+      case 'bitrix24_get_dialog_messages':
+        const dialogMessages = await bitrix24Client.getDialogMessages(args.dialogId, {
+          limit: args.limit,
+          lastId: args.lastId,
+          firstId: args.firstId
+        });
+        return {
+          success: true,
+          messages: dialogMessages,
+          message: `Messages retrieved from dialog ${args.dialogId}`
+        };
+
+      case 'bitrix24_search_dialog_messages':
+        const foundDialogMessages = await bitrix24Client.searchDialogMessages(args.chatId, args.searchMessage, {
+          limit: args.limit,
+          lastId: args.lastId,
+          dateFrom: args.dateFrom,
+          dateTo: args.dateTo,
+          date: args.date,
+          orderDirection: args.orderDirection
+        });
+        return {
+          success: true,
+          messages: foundDialogMessages,
+          message: `Message search completed in chat ${args.chatId}`
+        };
 
       case 'bitrix24_search_crm':
         const searchResults = await bitrix24Client.searchCRM(args.query, args.entityTypes);
@@ -1458,7 +1895,27 @@ export async function executeToolCall(name: string, args: any): Promise<any> {
 
       case 'bitrix24_get_all_users':
         const allUsers = await bitrix24Client.getAllUsers();
-        return { success: true, users: allUsers, message: `Found ${allUsers.length} users` };
+        const filteredUsers = args.includeInactive
+          ? allUsers
+          : allUsers.filter((user: Record<string, any>) => user.ACTIVE === true || user.ACTIVE === 'Y');
+        return { success: true, users: filteredUsers, message: `Found ${filteredUsers.length} users` };
+
+      case 'bitrix24_get_departments':
+        const departments = await bitrix24Client.getAllDepartments();
+        return { success: true, departments, message: `Found ${departments.length} departments` };
+
+      case 'bitrix24_export_org_structure':
+        const orgDepartments = await bitrix24Client.getAllDepartments();
+        const orgUsersRaw = await bitrix24Client.getAllUsers();
+        const orgUsers = args.includeInactiveUsers
+          ? orgUsersRaw
+          : orgUsersRaw.filter((user: Record<string, any>) => user.ACTIVE === true || user.ACTIVE === 'Y');
+        const orgStructure = buildOrgStructure(orgDepartments, orgUsers);
+        return {
+          success: true,
+          orgStructure,
+          message: `Exported ${orgStructure.summary.departments} departments, ${orgStructure.summary.users} users, and ${orgStructure.summary.reportingLines} reporting lines`
+        };
 
       case 'bitrix24_resolve_user_names':
         const userNames = await bitrix24Client.resolveUserNames(args.userIds);

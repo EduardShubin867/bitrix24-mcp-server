@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "bitrix24": {
+      "command": "node",
+      "args": [
+        "/Users/eduardshubin/mcp/bitrix24-mcp-server/build/index.js"
+      ],
+      "env": {
+        "BITRIX24_WEBHOOK_URL": "https://your-domain.bitrix24.com/rest/USER_ID/WEBHOOK_CODE/"
+      }
+    }
+  }
+}

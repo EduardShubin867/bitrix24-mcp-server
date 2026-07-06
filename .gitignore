@@ -106,3 +106,15 @@ package-deploy.json
 # Azure deployment files (keeping web.config as it's needed)
 .deployment
 deploy.cmd
+
+# Local MCP client config (contains a real Bitrix24 webhook secret + machine-specific paths)
+claude_desktop_config.json
+
+# Claude Code / oh-my-claudecode local session state (not part of the project)
+.omc/
+
+# Generated data exports (real Bitrix24 business data: users, tasks, reports)
+/exports/
+/bitrix24_*.json
+/bitrix24_*.csv
+/bitrix24_*.md

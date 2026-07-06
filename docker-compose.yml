@@ -1,0 +1,14 @@
+services:
+  bitrix24-mcp:
+    build: .
+    image: bitrix24-mcp-server
+    container_name: bitrix24-mcp-server
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - PORT=47365
+      - HOST=0.0.0.0
+    ports:
+      # host:container - change the left-hand (host) port if 47365 is taken
+      - "47365:47365"
