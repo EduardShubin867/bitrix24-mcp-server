@@ -294,7 +294,7 @@ Create a task titled "Follow up with client" with high priority, deadline tomorr
     "includeDeferred": false,
     "limit": 50,
     "orderBy": "DEADLINE",
-    "orderDirection": "asc"
+    "orderDirection": "ASC"
   }
 }
 ```

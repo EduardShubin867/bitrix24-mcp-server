@@ -707,9 +707,9 @@ export const listMyTasksTool: Tool = {
       },
       orderDirection: {
         type: 'string',
-        enum: ['asc', 'desc'],
+        enum: ['ASC', 'DESC'],
         description: 'Task order direction',
-        default: 'asc'
+        default: 'ASC'
       }
     }
   }
@@ -740,9 +740,9 @@ export const listTasksByUserTool: Tool = {
       },
       orderDirection: {
         type: 'string',
-        enum: ['asc', 'desc'],
+        enum: ['ASC', 'DESC'],
         description: 'Task order direction',
-        default: 'asc'
+        default: 'ASC'
       }
     },
     required: ['userId']
@@ -1877,6 +1877,7 @@ export async function executeToolCall(name: string, args: any): Promise<any> {
         return { success: true, data: currentUser, user: currentUser, message: 'Current Bitrix24 user retrieved' };
 
       case 'bitrix24_search_users':
+        if (!args.query && !args.email) return missingArgumentResponse('query/email');
         const foundUsers = await bitrix24Client.searchUsers({
           query: args.query,
           email: args.email,

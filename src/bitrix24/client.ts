@@ -1013,7 +1013,7 @@ export class Bitrix24Client {
       originator: 'CREATED_BY'
     };
     const order: Record<string, string> = {};
-    order[options.orderBy || 'DEADLINE'] = (options.orderDirection || 'asc').toUpperCase();
+    order[options.orderBy || 'DEADLINE'] = (options.orderDirection || 'ASC').toUpperCase();
     const fetchLimit = options.includeCompleted && options.includeDeferred
       ? this.clampMcpLimit(options.limit, 50)
       : MAX_MCP_LIMIT;
@@ -1187,7 +1187,7 @@ export class Bitrix24Client {
         'user.search',
         {
           FIND: options.query,
-          ...(activeOnly ? { ACTIVE: true } : {}),
+          ...(activeOnly ? { ACTIVE: 'Y' } : {}),
           USER_TYPE: 'employee'
         },
         { limit, start }
@@ -1281,7 +1281,8 @@ export class Bitrix24Client {
   }
 
   async getTaskFileInfo(fileId: string): Promise<any> {
-    const file = await this.makeRequest('disk.file.get', { id: fileId });
+    const normalizedFileId = String(fileId).replace(/^n/i, '').trim();
+    const file = await this.makeRequest('disk.file.get', { id: normalizedFileId });
     return pickFields(withFieldAliases(file), [
       'ID',
       'NAME',
