@@ -1,5 +1,5 @@
 import { Tool } from '@modelcontextprotocol/sdk/types.js';
-import { bitrix24Client, BitrixAiEngineCategory, BitrixContact, BitrixDeal, BitrixTask, BitrixLead, BitrixCompany, BitrixDepartment } from '../bitrix24/client.js';
+import { bitrix24Client, Bitrix24ClientError, BitrixAiEngineCategory, BitrixContact, BitrixDeal, BitrixTask, BitrixLead, BitrixCompany, BitrixDepartment } from '../bitrix24/client.js';
 
 type OrgUser = {
   id: string;
@@ -27,6 +27,41 @@ function normalizeId(value: unknown): string | null {
   }
 
   return String(value);
+}
+
+function missingArgumentResponse(name: string) {
+  return {
+    success: false,
+    error: `missing ${name}`,
+    message: `Required argument "${name}" is missing`
+  };
+}
+
+function formatToolError(error: unknown) {
+  if (error instanceof Bitrix24ClientError) {
+    return {
+      success: false,
+      error: error.code,
+      message: error.message,
+      method: error.method,
+      status: error.status
+    };
+  }
+
+  const message = error instanceof Error ? error.message : String(error);
+  const knownError = [
+    'ACCESS_DENIED',
+    'NO_AUTH_FOUND',
+    'QUERY_LIMIT_EXCEEDED',
+    'OPERATION_TIME_LIMIT',
+    'MISSING_CHAT_ID'
+  ].find((code) => message.includes(code));
+
+  return {
+    success: false,
+    error: knownError || message,
+    message
+  };
 }
 
 function getFullUserName(user: Record<string, any>): string {
@@ -621,6 +656,155 @@ export const updateTaskTool: Tool = {
       }
     },
     required: ['id']
+  }
+};
+
+export const getCurrentUserTool: Tool = {
+  name: 'bitrix24_get_current_user',
+  description: 'Get current Bitrix24 user using user.current',
+  inputSchema: {
+    type: 'object',
+    properties: {}
+  }
+};
+
+export const searchUsersTool: Tool = {
+  name: 'bitrix24_search_users',
+  description: 'Search Bitrix24 users by query, email, or name',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      query: { type: 'string', description: 'Name, surname, or free-text search query' },
+      email: { type: 'string', description: 'Email address to search first via user.get' },
+      activeOnly: { type: 'boolean', description: 'Return only active users', default: true },
+      limit: { type: 'number', description: 'Maximum users to return, capped at 200', default: 20 },
+      start: { type: 'number', description: 'Bitrix24 pagination start cursor', default: 0 }
+    }
+  }
+};
+
+export const listMyTasksTool: Tool = {
+  name: 'bitrix24_list_my_tasks',
+  description: 'List tasks assigned to current Bitrix24 user',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      includeCompleted: { type: 'boolean', description: 'Include completed tasks with REAL_STATUS=5', default: false },
+      includeDeferred: { type: 'boolean', description: 'Include deferred tasks with REAL_STATUS=6', default: false },
+      role: {
+        type: 'string',
+        enum: ['responsible', 'accomplice', 'auditor', 'originator'],
+        description: 'Task role filter for the current user',
+        default: 'responsible'
+      },
+      limit: { type: 'number', description: 'Maximum tasks to return, capped at 200', default: 50 },
+      start: { type: 'number', description: 'Bitrix24 pagination start cursor', default: 0 },
+      orderBy: {
+        type: 'string',
+        enum: ['ID', 'CREATED_DATE', 'CHANGED_DATE', 'ACTIVITY_DATE', 'DEADLINE', 'PRIORITY'],
+        description: 'Task order field',
+        default: 'DEADLINE'
+      },
+      orderDirection: {
+        type: 'string',
+        enum: ['asc', 'desc'],
+        description: 'Task order direction',
+        default: 'asc'
+      }
+    }
+  }
+};
+
+export const listTasksByUserTool: Tool = {
+  name: 'bitrix24_list_tasks_by_user',
+  description: 'List tasks for a specified Bitrix24 user by role',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      userId: { type: 'string', description: 'Bitrix24 user ID' },
+      role: {
+        type: 'string',
+        enum: ['responsible', 'accomplice', 'auditor', 'originator'],
+        description: 'Task role filter',
+        default: 'responsible'
+      },
+      includeCompleted: { type: 'boolean', description: 'Include completed tasks with REAL_STATUS=5', default: false },
+      includeDeferred: { type: 'boolean', description: 'Include deferred tasks with REAL_STATUS=6', default: false },
+      limit: { type: 'number', description: 'Maximum tasks to return, capped at 200', default: 50 },
+      start: { type: 'number', description: 'Bitrix24 pagination start cursor', default: 0 },
+      orderBy: {
+        type: 'string',
+        enum: ['ID', 'CREATED_DATE', 'CHANGED_DATE', 'ACTIVITY_DATE', 'DEADLINE', 'PRIORITY'],
+        description: 'Task order field',
+        default: 'DEADLINE'
+      },
+      orderDirection: {
+        type: 'string',
+        enum: ['asc', 'desc'],
+        description: 'Task order direction',
+        default: 'asc'
+      }
+    },
+    required: ['userId']
+  }
+};
+
+export const getTaskFullTool: Tool = {
+  name: 'bitrix24_get_task_full',
+  description: 'Get full task info by ID with CRM links, task attachments, chat ID, optional messages, and optional files',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      taskId: { type: 'string', description: 'Task ID' },
+      includeChatMessages: { type: 'boolean', description: 'Include task chat messages via im.dialog.messages.get', default: false },
+      includeFiles: { type: 'boolean', description: 'Include disk.file.get details for task attachments', default: false },
+      chatLimit: { type: 'number', description: 'Maximum chat messages to return', default: 20 }
+    },
+    required: ['taskId']
+  }
+};
+
+export const getTaskMessagesTool: Tool = {
+  name: 'bitrix24_get_task_messages',
+  description: 'Get messages/comments for task by taskId using task CHAT_ID and im.dialog.messages.get',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      taskId: { type: 'string', description: 'Task ID' },
+      limit: { type: 'number', description: 'Maximum messages to return', default: 20 },
+      lastId: { type: 'number', description: 'Return messages older than this message ID' },
+      firstId: { type: 'number', description: 'Return messages newer than this message ID' }
+    },
+    required: ['taskId']
+  }
+};
+
+export const getTaskFileInfoTool: Tool = {
+  name: 'bitrix24_get_task_file_info',
+  description: 'Get disk file information by file ID from task attachments',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      fileId: { type: 'string', description: 'Bitrix24 Disk file ID' }
+    },
+    required: ['fileId']
+  }
+};
+
+export const getMyTaskCountersTool: Tool = {
+  name: 'bitrix24_get_my_task_counters',
+  description: 'Get task counters for current Bitrix24 user',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      role: {
+        type: 'string',
+        enum: ['view_all', 'view_role_responsible', 'view_role_accomplice', 'view_role_auditor', 'view_role_originator'],
+        description: 'Counter type',
+        default: 'view_all'
+      },
+      groupId: { type: 'number', description: 'Bitrix24 group ID, 0 for all groups', default: 0 }
+    }
   }
 };
 
@@ -1373,6 +1557,14 @@ export const allTools = [
   getTaskTool,
   listTasksTool,
   updateTaskTool,
+  getCurrentUserTool,
+  searchUsersTool,
+  listMyTasksTool,
+  listTasksByUserTool,
+  getTaskFullTool,
+  getTaskMessagesTool,
+  getTaskFileInfoTool,
+  getMyTaskCountersTool,
   // AI Engine Tools
   registerAiEngineTool,
   listAiEnginesTool,
@@ -1679,6 +1871,96 @@ export async function executeToolCall(name: string, args: any): Promise<any> {
 
         const taskUpdated = await bitrix24Client.updateTask(args.id, updateTask);
         return { success: true, updated: taskUpdated, message: `Task ${args.id} updated successfully` };
+
+      case 'bitrix24_get_current_user':
+        const currentUser = await bitrix24Client.getCurrentUser();
+        return { success: true, data: currentUser, user: currentUser, message: 'Current Bitrix24 user retrieved' };
+
+      case 'bitrix24_search_users':
+        const foundUsers = await bitrix24Client.searchUsers({
+          query: args.query,
+          email: args.email,
+          activeOnly: args.activeOnly,
+          limit: args.limit,
+          start: args.start
+        });
+        return { success: true, data: foundUsers, users: foundUsers, message: `Found ${foundUsers.length} users` };
+
+      case 'bitrix24_list_my_tasks':
+        const myTasksResult = await bitrix24Client.listMyTasks({
+          includeCompleted: args.includeCompleted,
+          includeDeferred: args.includeDeferred,
+          role: args.role,
+          limit: args.limit,
+          start: args.start,
+          orderBy: args.orderBy,
+          orderDirection: args.orderDirection
+        });
+        return {
+          success: true,
+          data: myTasksResult,
+          currentUser: myTasksResult.currentUser,
+          tasks: myTasksResult.tasks,
+          message: `Found ${myTasksResult.tasks.length} tasks for current user`
+        };
+
+      case 'bitrix24_list_tasks_by_user':
+        if (!args.userId) return missingArgumentResponse('userId');
+        const userTasks = await bitrix24Client.listTasksByUser(String(args.userId), {
+          includeCompleted: args.includeCompleted,
+          includeDeferred: args.includeDeferred,
+          role: args.role,
+          limit: args.limit,
+          start: args.start,
+          orderBy: args.orderBy,
+          orderDirection: args.orderDirection
+        });
+        return { success: true, data: userTasks, tasks: userTasks, message: `Found ${userTasks.length} tasks for user ${args.userId}` };
+
+      case 'bitrix24_get_task_full':
+        if (!args.taskId) return missingArgumentResponse('taskId');
+        const fullTask = await bitrix24Client.getTaskFull(String(args.taskId), {
+          includeChatMessages: args.includeChatMessages,
+          includeFiles: args.includeFiles,
+          chatLimit: args.chatLimit
+        });
+        return {
+          success: true,
+          data: fullTask,
+          task: fullTask.task,
+          messages: fullTask.messages,
+          files: fullTask.files,
+          message: `Task ${args.taskId} retrieved`
+        };
+
+      case 'bitrix24_get_task_messages':
+        if (!args.taskId) return missingArgumentResponse('taskId');
+        const taskMessages = await bitrix24Client.getTaskMessages(String(args.taskId), {
+          limit: args.limit,
+          lastId: args.lastId,
+          firstId: args.firstId
+        });
+        return {
+          success: true,
+          data: taskMessages,
+          task: taskMessages.task,
+          messages: taskMessages.messages,
+          users: taskMessages.users,
+          files: taskMessages.files,
+          message: `Messages retrieved for task ${args.taskId}`
+        };
+
+      case 'bitrix24_get_task_file_info':
+        if (!args.fileId) return missingArgumentResponse('fileId');
+        const taskFileInfo = await bitrix24Client.getTaskFileInfo(String(args.fileId));
+        return { success: true, data: taskFileInfo, file: taskFileInfo, message: `File ${args.fileId} retrieved` };
+
+      case 'bitrix24_get_my_task_counters':
+        const counters = await bitrix24Client.getTaskCounters({
+          role: args.role,
+          groupId: args.groupId
+        });
+        return { success: true, data: counters, counters, message: 'Task counters retrieved for current user' };
 
       case 'bitrix24_register_ai_engine':
         const aiEngineId = await bitrix24Client.registerAiEngine({
@@ -2118,9 +2400,6 @@ export async function executeToolCall(name: string, args: any): Promise<any> {
     }
   } catch (error) {
     console.error(`Tool execution error [${name}]:`, error);
-    return {
-      success: false,
-      error: error instanceof Error ? error.message : String(error)
-    };
+    return formatToolError(error);
   }
 }

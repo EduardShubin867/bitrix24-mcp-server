@@ -33,11 +33,15 @@ function getBitrix24WebhookUrl(): string {
 
 // Validation schemas
 const BitrixResponseSchema = z.object({
-  result: z.any(),
-  error: z.optional(z.object({
-    error: z.string(),
-    error_description: z.string()
-  })),
+  result: z.any().optional(),
+  error: z.optional(z.union([
+    z.string(),
+    z.object({
+      error: z.string(),
+      error_description: z.string().optional()
+    })
+  ])),
+  error_description: z.optional(z.string()),
   total: z.optional(z.number()),
   next: z.optional(z.number()),
   time: z.optional(z.object({
@@ -45,7 +49,191 @@ const BitrixResponseSchema = z.object({
     finish: z.number(),
     duration: z.number()
   }))
-});
+}).passthrough();
+
+const MAX_PAGE_LIMIT = 50;
+const MAX_MCP_LIMIT = 200;
+const SAFE_USER_FIELDS = [
+  'ID',
+  'NAME',
+  'LAST_NAME',
+  'SECOND_NAME',
+  'EMAIL',
+  'WORK_POSITION',
+  'UF_DEPARTMENT',
+  'ACTIVE',
+  'USER_TYPE'
+];
+
+const TASK_LIST_SELECT = [
+  'ID',
+  'TITLE',
+  'DESCRIPTION',
+  'STATUS',
+  'REAL_STATUS',
+  'subStatus',
+  'DEADLINE',
+  'CREATED_DATE',
+  'CHANGED_DATE',
+  'ACTIVITY_DATE',
+  'RESPONSIBLE_ID',
+  'CREATED_BY',
+  'ACCOMPLICES',
+  'AUDITORS',
+  'PRIORITY',
+  'MARK',
+  'GROUP_ID',
+  'GROUP_NAME',
+  'UF_CRM_TASK',
+  'UF_TASK_WEBDAV_FILES',
+  'CHAT_ID'
+];
+
+export type TaskUserRole = 'responsible' | 'accomplice' | 'auditor' | 'originator';
+
+export class Bitrix24ClientError extends Error {
+  code: string;
+  method?: string;
+  status?: number;
+  details?: unknown;
+
+  constructor(message: string, code: string = 'BITRIX24_ERROR', options: {
+    method?: string;
+    status?: number;
+    details?: unknown;
+  } = {}) {
+    super(message);
+    this.name = 'Bitrix24ClientError';
+    this.code = code;
+    this.method = options.method;
+    this.status = options.status;
+    this.details = options.details;
+  }
+}
+
+function appendFormValue(body: URLSearchParams, key: string, value: unknown): void {
+  if (value === undefined || value === null) {
+    return;
+  }
+
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => appendFormValue(body, `${key}[${index}]`, item));
+    return;
+  }
+
+  if (typeof value === 'object') {
+    Object.entries(value as Record<string, unknown>).forEach(([nestedKey, nestedValue]) => {
+      appendFormValue(body, `${key}[${nestedKey}]`, nestedValue);
+    });
+    return;
+  }
+
+  body.append(key, String(value));
+}
+
+function sanitizeForLog(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(sanitizeForLog);
+  }
+
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([key, nestedValue]) => {
+        if (/token|auth|webhook|password|secret/i.test(key)) {
+          return [key, '[REDACTED]'];
+        }
+
+        return [key, sanitizeForLog(nestedValue)];
+      })
+    );
+  }
+
+  if (typeof value === 'string' && /\/rest\/\d+\/[^/]+/i.test(value)) {
+    return value.replace(/\/rest\/(\d+)\/[^/]+/i, '/rest/$1/[REDACTED]');
+  }
+
+  return value;
+}
+
+function toCamelCase(key: string): string {
+  return key
+    .toLowerCase()
+    .replace(/_([a-z0-9])/g, (_, char: string) => char.toUpperCase());
+}
+
+function toUpperSnakeCase(key: string): string {
+  return key
+    .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
+    .replace(/[-\s]+/g, '_')
+    .toUpperCase();
+}
+
+function withFieldAliases<T extends Record<string, any>>(record: T): T & Record<string, any> {
+  const normalized: Record<string, any> = { ...record };
+
+  Object.entries(record).forEach(([key, value]) => {
+    const camelKey = toCamelCase(key);
+    const upperSnakeKey = toUpperSnakeCase(key);
+
+    if (!(camelKey in normalized)) {
+      normalized[camelKey] = value;
+    }
+
+    if (!(upperSnakeKey in normalized)) {
+      normalized[upperSnakeKey] = value;
+    }
+  });
+
+  return normalized as T & Record<string, any>;
+}
+
+function pickFields(record: Record<string, any>, fields: string[]): Record<string, any> {
+  const picked: Record<string, any> = {};
+
+  fields.forEach((field) => {
+    if (record[field] !== undefined) {
+      picked[field] = record[field];
+      return;
+    }
+
+    const camelField = toCamelCase(field);
+    if (record[camelField] !== undefined) {
+      picked[field] = record[camelField];
+    }
+  });
+
+  return withFieldAliases(picked);
+}
+
+function normalizeCollectionResult(result: any, collectionKey?: string): any[] {
+  if (Array.isArray(result)) {
+    return result;
+  }
+
+  if (collectionKey && Array.isArray(result?.[collectionKey])) {
+    return result[collectionKey];
+  }
+
+  for (const value of Object.values(result || {})) {
+    if (Array.isArray(value)) {
+      return value;
+    }
+  }
+
+  return [];
+}
+
+function getTaskChatId(task: Record<string, any>): string | undefined {
+  const chatId = task.CHAT_ID ?? task.chatId ?? task.chat_id;
+  return chatId === undefined || chatId === null || chatId === '' || chatId === 0 || chatId === '0'
+    ? undefined
+    : String(chatId);
+}
+
+function normalizeTaskStatus(task: Record<string, any>): string | undefined {
+  const status = task.REAL_STATUS ?? task.realStatus ?? task.real_status ?? task.STATUS ?? task.status;
+  return status === undefined || status === null ? undefined : String(status);
+}
 
 export interface BitrixContact {
   ID?: string;
@@ -194,6 +382,7 @@ export class Bitrix24Client {
     await this.enforceRateLimit();
 
     const url = `${this.baseUrl}/${method}`;
+    console.error(`Bitrix24 REST request: ${method}`, JSON.stringify(sanitizeForLog(params)));
     
     try {
       let response;
@@ -209,55 +398,8 @@ export class Bitrix24Client {
       } else {
         // POST request with form data
         const body = new URLSearchParams();
-        
-        Object.entries(params).forEach(([key, value]) => {
-          if (key === 'fields' && typeof value === 'object' && value !== null) {
-            // For fields parameter, we need to send each field as a separate parameter
-            Object.entries(value).forEach(([fieldKey, fieldValue]) => {
-              if (Array.isArray(fieldValue)) {
-                // Handle arrays (like phone/email arrays)
-                fieldValue.forEach((item, index) => {
-                  if (typeof item === 'object') {
-                    Object.entries(item).forEach(([subKey, subValue]) => {
-                      body.append(`fields[${fieldKey}][${index}][${subKey}]`, String(subValue));
-                    });
-                  } else {
-                    body.append(`fields[${fieldKey}][${index}]`, String(item));
-                  }
-                });
-              } else if (typeof fieldValue === 'object' && fieldValue !== null) {
-                Object.entries(fieldValue).forEach(([subKey, subValue]) => {
-                  body.append(`fields[${fieldKey}][${subKey}]`, String(subValue));
-                });
-              } else if (fieldValue !== undefined && fieldValue !== null) {
-                body.append(`fields[${fieldKey}]`, String(fieldValue));
-              }
-            });
-          } else if (key === 'order' && typeof value === 'object' && value !== null) {
-            // Handle order parameter specially - Bitrix24 expects it as individual parameters
-            Object.entries(value).forEach(([orderKey, orderValue]) => {
-              body.append(`order[${orderKey}]`, String(orderValue));
-            });
-          } else if (key === 'ORDER' && typeof value === 'object' && value !== null) {
-            // Chat APIs use uppercase ORDER in the REST contract.
-            Object.entries(value).forEach(([orderKey, orderValue]) => {
-              body.append(`ORDER[${orderKey}]`, String(orderValue));
-            });
-          } else if (key === 'filter' && typeof value === 'object' && value !== null) {
-            // Handle filter parameter specially
-            Object.entries(value).forEach(([filterKey, filterValue]) => {
-              body.append(`filter[${filterKey}]`, String(filterValue));
-            });
-          } else if (Array.isArray(value)) {
-            value.forEach((item, index) => {
-              body.append(`${key}[${index}]`, String(item));
-            });
-          } else if (typeof value === 'object' && value !== null) {
-            body.append(key, JSON.stringify(value));
-          } else if (value !== undefined && value !== null) {
-            body.append(key, String(value));
-          }
-        });
+
+        Object.entries(params).forEach(([key, value]) => appendFormValue(body, key, value));
 
         response = await fetch(url, {
           method: 'POST',
@@ -272,14 +414,35 @@ export class Bitrix24Client {
       if (!response.ok) {
         const errorText = await response.text();
         console.error(`HTTP Error ${response.status}:`, errorText);
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        let errorPayload: any = errorText;
+
+        try {
+          errorPayload = JSON.parse(errorText);
+        } catch {
+          // Keep the raw response body when Bitrix returns non-JSON errors.
+        }
+
+        throw new Bitrix24ClientError(
+          `HTTP ${response.status}: ${response.statusText}`,
+          response.status === 404 ? 'CONNECTOR_NOT_FOUND' : 'HTTP_ERROR',
+          { method, status: response.status, details: errorPayload }
+        );
       }
 
       const data = await response.json();
       const parsed = BitrixResponseSchema.parse(data);
       
       if (parsed.error) {
-        throw new Error(`Bitrix24 API Error: ${parsed.error.error} - ${parsed.error.error_description}`);
+        const code = typeof parsed.error === 'string' ? parsed.error : parsed.error.error;
+        const description = typeof parsed.error === 'string'
+          ? parsed.error_description || parsed.error
+          : parsed.error.error_description || parsed.error.error;
+
+        throw new Bitrix24ClientError(
+          `Bitrix24 API Error: ${code} - ${description}`,
+          code,
+          { method, details: data }
+        );
       }
 
       return includeMeta ? parsed : parsed.result;
@@ -731,6 +894,59 @@ export class Bitrix24Client {
     return deals.slice(0, options.limit || 50);
   }
 
+  private clampMcpLimit(limit: number | undefined, fallback: number = 50): number {
+    const numericLimit = Number(limit ?? fallback);
+    if (!Number.isFinite(numericLimit) || numericLimit <= 0) {
+      return fallback;
+    }
+
+    return Math.min(Math.floor(numericLimit), MAX_MCP_LIMIT);
+  }
+
+  private async pagedRequest<T>(
+    method: string,
+    params: Record<string, any> = {},
+    options: {
+      limit?: number;
+      start?: number;
+      collectionKey?: string;
+      fallbackLimit?: number;
+    } = {}
+  ): Promise<T[]> {
+    const limit = this.clampMcpLimit(options.limit, options.fallbackLimit ?? 50);
+    let start = Math.max(0, Number(options.start ?? 0));
+    const items: T[] = [];
+    const seenStarts = new Set<number>();
+
+    while (items.length < limit) {
+      if (seenStarts.has(start)) {
+        throw new Bitrix24ClientError(
+          `Bitrix24 pagination returned repeated cursor: ${start}`,
+          'PAGINATION_LOOP',
+          { method }
+        );
+      }
+      seenStarts.add(start);
+
+      const response = await this.makeRequest(
+        method,
+        { ...params, start },
+        true
+      );
+
+      const page = normalizeCollectionResult(response.result, options.collectionKey) as T[];
+      items.push(...page);
+
+      if (items.length >= limit || typeof response.next !== 'number') {
+        break;
+      }
+
+      start = response.next;
+    }
+
+    return items.slice(0, limit);
+  }
+
   // Task Methods
   async createTask(task: BitrixTask): Promise<string> {
     const result = await this.makeRequest('tasks.task.add', { fields: task });
@@ -743,9 +959,14 @@ export class Bitrix24Client {
     return taskId.toString();
   }
 
-  async getTask(id: string): Promise<BitrixTask> {
-    const result = await this.makeRequest('tasks.task.get', { taskId: id });
-    return result.task || result;
+  async getTask(id: string, select?: string[]): Promise<BitrixTask> {
+    const params: Record<string, any> = { taskId: id };
+    if (select) {
+      params.select = select;
+    }
+
+    const result = await this.makeRequest('tasks.task.get', params);
+    return withFieldAliases(result.task || result) as BitrixTask;
   }
 
   async updateTask(id: string, task: Partial<BitrixTask>): Promise<boolean> {
@@ -758,19 +979,232 @@ export class Bitrix24Client {
     filter?: Record<string, any>;
     order?: Record<string, string>;
     start?: number;
+    limit?: number;
+    params?: Record<string, any>;
   } = {}): Promise<BitrixTask[]> {
-    const result = await this.makeRequest('tasks.task.list', params);
-    return result.tasks || (Array.isArray(result) ? result : []);
+    const { limit, ...requestParams } = params;
+    const tasks = await this.pagedRequest<BitrixTask>(
+      'tasks.task.list',
+      requestParams,
+      {
+        limit: limit || MAX_PAGE_LIMIT,
+        start: params.start || 0,
+        collectionKey: 'tasks'
+      }
+    );
+
+    return tasks.map((task) => withFieldAliases(task as Record<string, any>) as BitrixTask);
+  }
+
+  async listTasksByUser(userId: string, options: {
+    role?: TaskUserRole;
+    includeCompleted?: boolean;
+    includeDeferred?: boolean;
+    limit?: number;
+    start?: number;
+    orderBy?: string;
+    orderDirection?: 'asc' | 'desc' | 'ASC' | 'DESC';
+  } = {}): Promise<BitrixTask[]> {
+    const role = options.role || 'responsible';
+    const roleFilterMap: Record<TaskUserRole, string> = {
+      responsible: 'RESPONSIBLE_ID',
+      accomplice: 'ACCOMPLICE',
+      auditor: 'AUDITOR',
+      originator: 'CREATED_BY'
+    };
+    const order: Record<string, string> = {};
+    order[options.orderBy || 'DEADLINE'] = (options.orderDirection || 'asc').toUpperCase();
+    const fetchLimit = options.includeCompleted && options.includeDeferred
+      ? this.clampMcpLimit(options.limit, 50)
+      : MAX_MCP_LIMIT;
+
+    const tasks = await this.listTasks({
+      start: options.start || 0,
+      limit: fetchLimit,
+      filter: {
+        [roleFilterMap[role]]: userId
+      },
+      order,
+      select: TASK_LIST_SELECT,
+      params: {
+        WITH_PARSED_DESCRIPTION: true,
+        WITH_TIMER_INFO: true,
+        WITH_RESULT_INFO: true
+      }
+    });
+
+    const filteredTasks = tasks.filter((task) => {
+      const status = normalizeTaskStatus(task as Record<string, any>);
+      if (!options.includeCompleted && status === '5') {
+        return false;
+      }
+
+      if (!options.includeDeferred && status === '6') {
+        return false;
+      }
+
+      return true;
+    });
+
+    return filteredTasks.slice(0, this.clampMcpLimit(options.limit, 50));
+  }
+
+  async listMyTasks(options: Parameters<Bitrix24Client['listTasksByUser']>[1] = {}): Promise<{
+    currentUser: any;
+    tasks: BitrixTask[];
+  }> {
+    const currentUser = await this.getCurrentUser();
+    const currentUserId = currentUser.ID ?? currentUser.id;
+
+    if (!currentUserId) {
+      throw new Bitrix24ClientError('Bitrix24 did not return current user ID', 'NO_AUTH_FOUND');
+    }
+
+    const tasks = await this.listTasksByUser(String(currentUserId), options);
+
+    return {
+      currentUser,
+      tasks
+    };
+  }
+
+  async getTaskFull(taskId: string, options: {
+    includeChatMessages?: boolean;
+    includeFiles?: boolean;
+    chatLimit?: number;
+  } = {}): Promise<{
+    task: any;
+    messages: any;
+    files: any[];
+  }> {
+    const task = await this.getTask(taskId, ['*', 'UF_CRM_TASK', 'UF_TASK_WEBDAV_FILES', 'UF_MAIL_MESSAGE', 'CHAT_ID']);
+    const normalizedTask = withFieldAliases(task as Record<string, any>);
+    let messages: any = null;
+    let files: any[] = [];
+
+    if (options.includeChatMessages) {
+      const chatId = getTaskChatId(normalizedTask);
+      if (chatId) {
+        messages = await this.getDialogMessages(`chat${chatId}`, {
+          limit: options.chatLimit || 20
+        });
+      }
+    }
+
+    if (options.includeFiles) {
+      const rawFileIds = normalizedTask.UF_TASK_WEBDAV_FILES ?? normalizedTask.ufTaskWebdavFiles ?? [];
+      const fileIds = (Array.isArray(rawFileIds) ? rawFileIds : [rawFileIds])
+        .map((fileId) => String(fileId).replace(/^n/i, '').trim())
+        .filter(Boolean);
+
+      files = await Promise.all(fileIds.map((fileId) => this.getTaskFileInfo(fileId)));
+    }
+
+    return {
+      task: normalizedTask,
+      messages,
+      files
+    };
+  }
+
+  async getTaskMessages(taskId: string, options: {
+    limit?: number;
+    lastId?: number;
+    firstId?: number;
+  } = {}): Promise<{
+    task: any;
+    messages: any;
+    users: any;
+    files: any;
+  }> {
+    const task = await this.getTask(taskId, ['ID', 'TITLE', 'CHAT_ID']);
+    const normalizedTask = withFieldAliases(task as Record<string, any>);
+    const chatId = getTaskChatId(normalizedTask);
+
+    if (!chatId) {
+      throw new Bitrix24ClientError(`Task ${taskId} does not have CHAT_ID`, 'MISSING_CHAT_ID');
+    }
+
+    const response = await this.getDialogMessages(`chat${chatId}`, options);
+
+    return {
+      task: normalizedTask,
+      messages: response?.messages ?? response,
+      users: response?.users ?? null,
+      files: response?.files ?? null
+    };
   }
 
   // Utility Methods
   async getCurrentUser(): Promise<any> {
-    return await this.makeRequest('user.current');
+    const user = await this.makeRequest('user.current');
+    return pickFields(user, SAFE_USER_FIELDS);
   }
 
   // User Management Methods
   async getUser(userId: string): Promise<any> {
-    return await this.makeRequest('user.get', { ID: userId });
+    const result = await this.makeRequest('user.get', { ID: userId });
+    const user = Array.isArray(result) ? result[0] : result;
+    return user ? pickFields(user, SAFE_USER_FIELDS) : null;
+  }
+
+  async searchUsers(options: {
+    query?: string;
+    email?: string;
+    activeOnly?: boolean;
+    limit?: number;
+    start?: number;
+  } = {}): Promise<any[]> {
+    const limit = this.clampMcpLimit(options.limit, 20);
+    const start = Math.max(0, Number(options.start ?? 0));
+    const activeOnly = options.activeOnly !== false;
+    let users: any[] = [];
+
+    if (options.email) {
+      users = await this.pagedRequest<any>(
+        'user.get',
+        {
+          FILTER: {
+            EMAIL: options.email,
+            ...(activeOnly ? { ACTIVE: 'Y' } : {})
+          }
+        },
+        { limit, start }
+      );
+
+      if (users.length === 0) {
+        users = await this.pagedRequest<any>(
+          'user.get',
+          {
+            EMAIL: options.email,
+            ...(activeOnly ? { ACTIVE: 'Y' } : {})
+          },
+          { limit, start }
+        );
+      }
+    } else if (options.query) {
+      users = await this.pagedRequest<any>(
+        'user.search',
+        {
+          FIND: options.query,
+          ...(activeOnly ? { ACTIVE: true } : {}),
+          USER_TYPE: 'employee'
+        },
+        { limit, start }
+      );
+    } else {
+      users = await this.pagedRequest<any>(
+        'user.get',
+        {
+          FILTER: {
+            ...(activeOnly ? { ACTIVE: 'Y' } : {})
+          }
+        },
+        { limit, start }
+      );
+    }
+
+    return users.map((user) => pickFields(user, SAFE_USER_FIELDS));
   }
 
   async getAllUsers(): Promise<any[]> {
@@ -786,7 +1220,7 @@ export class Bitrix24Client {
 
       const response = await this.makeRequest('user.get', { start }, true);
       const page = Array.isArray(response.result) ? response.result : [];
-      users.push(...page);
+      users.push(...page.map((user: Record<string, any>) => pickFields(user, SAFE_USER_FIELDS)));
 
       if (typeof response.next !== 'number') {
         break;
@@ -844,6 +1278,30 @@ export class Bitrix24Client {
       }
     }
     return results;
+  }
+
+  async getTaskFileInfo(fileId: string): Promise<any> {
+    const file = await this.makeRequest('disk.file.get', { id: fileId });
+    return pickFields(withFieldAliases(file), [
+      'ID',
+      'NAME',
+      'SIZE',
+      'TYPE',
+      'DOWNLOAD_URL',
+      'DETAIL_URL',
+      'CREATE_TIME',
+      'UPDATE_TIME'
+    ]);
+  }
+
+  async getTaskCounters(options: {
+    role?: 'view_all' | 'view_role_responsible' | 'view_role_accomplice' | 'view_role_auditor' | 'view_role_originator';
+    groupId?: number;
+  } = {}): Promise<any> {
+    return await this.makeRequest('tasks.task.counters.get', {
+      groupId: options.groupId ?? 0,
+      type: options.role || 'view_all'
+    });
   }
 
   async resolveUserNames(userIds: string[]): Promise<Record<string, string>> {

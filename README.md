@@ -30,8 +30,16 @@ A comprehensive Model Context Protocol (MCP) server for Bitrix24 CRM integration
 - `bitrix24_get_task` - Retrieve task by ID
 - `bitrix24_list_tasks` - List tasks with filtering
 - `bitrix24_update_task` - Update existing tasks
+- `bitrix24_list_my_tasks` - List tasks for the current webhook user using `user.current` + `tasks.task.list`
+- `bitrix24_list_tasks_by_user` - List tasks for a specified user and role
+- `bitrix24_get_task_full` - Get the full task card with CRM links, files, and chat ID
+- `bitrix24_get_task_messages` - Read task chat messages using `im.dialog.messages.get`
+- `bitrix24_get_task_file_info` - Get Bitrix24 Disk file metadata and download URL
+- `bitrix24_get_my_task_counters` - Get task counters for the current user
 
 ### User Management
+- `bitrix24_get_current_user` - Get current Bitrix24 user via `user.current`
+- `bitrix24_search_users` - Search active employees by query, email, or name
 - `bitrix24_get_user` - Get user information by ID
 - `bitrix24_get_all_users` - Get all users in the system with names and details
 - `bitrix24_resolve_user_names` - Resolve user IDs to user names
@@ -65,7 +73,6 @@ A comprehensive Model Context Protocol (MCP) server for Bitrix24 CRM integration
 
 ### Utilities
 - `bitrix24_search_crm` - Search across CRM entities
-- `bitrix24_get_current_user` - Get current user info
 - `bitrix24_validate_webhook` - Validate webhook connection
 - `bitrix24_diagnose_permissions` - Diagnose webhook permissions
 - `bitrix24_check_crm_settings` - Check CRM settings and configuration
@@ -277,6 +284,68 @@ Create a new contact for Maria Rossi with email maria@company.com, then create a
 Create a task titled "Follow up with client" with high priority, deadline tomorrow, and link it to contact ID 123
 ```
 
+### Listing My Tasks
+```json
+{
+  "tool": "bitrix24_list_my_tasks",
+  "arguments": {
+    "role": "responsible",
+    "includeCompleted": false,
+    "includeDeferred": false,
+    "limit": 50,
+    "orderBy": "DEADLINE",
+    "orderDirection": "asc"
+  }
+}
+```
+
+### Finding a User and Listing Their Tasks
+```json
+{
+  "tool": "bitrix24_search_users",
+  "arguments": {
+    "query": "Ivan",
+    "activeOnly": true,
+    "limit": 20
+  }
+}
+```
+
+```json
+{
+  "tool": "bitrix24_list_tasks_by_user",
+  "arguments": {
+    "userId": "123",
+    "role": "responsible",
+    "limit": 50
+  }
+}
+```
+
+### Opening a Full Task Card
+```json
+{
+  "tool": "bitrix24_get_task_full",
+  "arguments": {
+    "taskId": "456",
+    "includeChatMessages": true,
+    "includeFiles": true,
+    "chatLimit": 20
+  }
+}
+```
+
+### Reading Task Chat Messages
+```json
+{
+  "tool": "bitrix24_get_task_messages",
+  "arguments": {
+    "taskId": "456",
+    "limit": 20
+  }
+}
+```
+
 ### Searching CRM
 ```
 Search for all contacts and deals related to "example.com"
@@ -318,6 +387,9 @@ npm run dev
 
 # Run tests
 npm test
+
+# Smoke-test task tools
+npm run smoke:task-tools
 
 # Start the server
 npm start
@@ -394,11 +466,19 @@ Set `NODE_ENV=development` and `LOG_LEVEL=debug` in your `.env` file for detaile
 
 #### Tasks
 - `createTask(task: BitrixTask): Promise<string>`
-- `getTask(id: string): Promise<BitrixTask>`
+- `getTask(id: string, select?: string[]): Promise<BitrixTask>`
 - `updateTask(id: string, task: Partial<BitrixTask>): Promise<boolean>`
 - `listTasks(params?: TaskListParams): Promise<BitrixTask[]>`
+- `listMyTasks(options?: ListTasksByUserOptions): Promise<{ currentUser: any; tasks: BitrixTask[] }>`
+- `listTasksByUser(userId: string, options?: ListTasksByUserOptions): Promise<BitrixTask[]>`
+- `getTaskFull(taskId: string, options?: GetTaskFullOptions): Promise<{ task: any; messages: any; files: any[] }>`
+- `getTaskMessages(taskId: string, options?: GetTaskMessagesOptions): Promise<any>`
+- `getTaskFileInfo(fileId: string): Promise<any>`
+- `getTaskCounters(options?: TaskCounterOptions): Promise<any>`
 
 #### Users
+- `getCurrentUser(): Promise<any>`
+- `searchUsers(options?: SearchUsersOptions): Promise<any[]>`
 - `getUser(userId: string): Promise<any>`
 - `getAllUsers(): Promise<any[]>`
 - `getUsersByIds(userIds: string[]): Promise<any[]>`
@@ -406,7 +486,6 @@ Set `NODE_ENV=development` and `LOG_LEVEL=debug` in your `.env` file for detaile
 - `enhanceWithUserNames<T>(items: T[], userIdFields?: string[]): Promise<T[]>`
 
 #### Utilities
-- `getCurrentUser(): Promise<any>`
 - `searchCRM(query: string, entityTypes?: string[]): Promise<any>`
 - `validateWebhook(): Promise<boolean>`
 
