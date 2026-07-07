@@ -21,6 +21,8 @@ const REQUIRED_TASK_TOOL_NAMES = [
 const PORT = Number(process.env.PORT) || 47365;
 const HOST = process.env.HOST || '0.0.0.0';
 const AUTH_TOKEN = process.env.MCP_AUTH_TOKEN;
+const TRANSPORT_TYPE = 'http';
+const ENTRYPOINT_FILENAME = new URL(import.meta.url).pathname;
 const ALLOWED_ORIGINS = (process.env.MCP_ALLOWED_ORIGINS || '*')
   .split(',')
   .map((origin) => origin.trim())
@@ -91,6 +93,26 @@ function requireAuth(req: Request, res: Response, next: NextFunction) {
   });
 }
 
+function getHttpToolRegistrySnapshot() {
+  const tools = allTools.map((tool) => tool.name);
+
+  return {
+    transport: TRANSPORT_TYPE,
+    entrypoint: ENTRYPOINT_FILENAME,
+    toolCount: tools.length,
+    requiredTaskTools: {
+      present: REQUIRED_TASK_TOOL_NAMES.filter((toolName) => tools.includes(toolName)),
+      missing: REQUIRED_TASK_TOOL_NAMES.filter((toolName) => !tools.includes(toolName))
+    },
+    tools,
+    toolSchemas: allTools.map((tool) => ({
+      name: tool.name,
+      description: tool.description,
+      inputSchema: tool.inputSchema
+    }))
+  };
+}
+
 app.get('/health', (_req: Request, res: Response) => {
   res.json({
     status: 'healthy',
@@ -102,20 +124,7 @@ app.get('/health', (_req: Request, res: Response) => {
 });
 
 app.get('/debug/tools', requireAuth, (_req: Request, res: Response) => {
-  const toolNames = allTools.map((tool) => tool.name);
-
-  res.json({
-    count: toolNames.length,
-    requiredTaskTools: {
-      present: REQUIRED_TASK_TOOL_NAMES.filter((toolName) => toolNames.includes(toolName)),
-      missing: REQUIRED_TASK_TOOL_NAMES.filter((toolName) => !toolNames.includes(toolName))
-    },
-    tools: allTools.map((tool) => ({
-      name: tool.name,
-      description: tool.description,
-      inputSchema: tool.inputSchema
-    }))
-  });
+  res.json(getHttpToolRegistrySnapshot());
 });
 
 app.get('/', (_req: Request, res: Response) => {
@@ -196,8 +205,13 @@ app.get(['/mcp', '/mcp/:token'], requireAuth, handleMcpSessionRequest);
 app.delete(['/mcp', '/mcp/:token'], requireAuth, handleMcpSessionRequest);
 
 const httpServer = app.listen(PORT, HOST, () => {
+  const registry = getHttpToolRegistrySnapshot();
+
   console.error(`Bitrix24 MCP Server (Streamable HTTP) listening on http://${HOST}:${PORT}/mcp`);
-  console.error('Available tools:', allTools.map(t => t.name).join(', '));
+  console.error(`MCP HTTP startup: transport=${registry.transport}`);
+  console.error(`MCP HTTP startup: entrypoint=${registry.entrypoint}`);
+  console.error(`MCP HTTP startup: total registered tools count=${registry.toolCount}`);
+  console.error(`MCP HTTP startup: registered tools=${registry.tools.join(', ')}`);
 });
 
 async function shutdown() {
