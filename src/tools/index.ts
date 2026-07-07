@@ -525,6 +525,105 @@ export const getCompaniesFromDateRangeTool: Tool = {
   }
 };
 
+// Task Management Tools
+export const createTaskTool: Tool = {
+  name: 'bitrix24_create_task',
+  description: 'Create a new task in Bitrix24',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      title: { type: 'string', description: 'Task title' },
+      description: { type: 'string', description: 'Task description' },
+      responsibleId: { type: 'string', description: 'User ID responsible for the task' },
+      deadline: { type: 'string', description: 'Task deadline in ISO 8601 or Bitrix-compatible date format' },
+      priority: {
+        type: 'string',
+        enum: ['0', '1', '2'],
+        description: 'Task priority: 0=low, 1=normal, 2=high',
+        default: '1'
+      },
+      status: {
+        type: 'string',
+        enum: ['1', '2', '3', '4', '5'],
+        description: 'Task status: 1=new, 2=pending, 3=in progress, 4=completed, 5=deferred'
+      },
+      crmLinks: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'Optional CRM links for UF_CRM_TASK, for example ["D_123"], ["C_123"], ["CO_123"], or ["L_123"]'
+      }
+    },
+    required: ['title', 'responsibleId']
+  }
+};
+
+export const getTaskTool: Tool = {
+  name: 'bitrix24_get_task',
+  description: 'Retrieve task information by ID',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      id: { type: 'string', description: 'Task ID' }
+    },
+    required: ['id']
+  }
+};
+
+export const listTasksTool: Tool = {
+  name: 'bitrix24_list_tasks',
+  description: 'List tasks with optional filtering and ordering',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      limit: { type: 'number', description: 'Maximum number of tasks to return', default: 20 },
+      filter: { type: 'object', description: 'Bitrix task filter criteria, for example {"RESPONSIBLE_ID":"1"}' },
+      orderBy: {
+        type: 'string',
+        enum: ['ID', 'TITLE', 'CREATED_DATE', 'DEADLINE', 'STATUS', 'PRIORITY'],
+        description: 'Field to order by',
+        default: 'CREATED_DATE'
+      },
+      orderDirection: {
+        type: 'string',
+        enum: ['ASC', 'DESC'],
+        description: 'Order direction',
+        default: 'DESC'
+      }
+    }
+  }
+};
+
+export const updateTaskTool: Tool = {
+  name: 'bitrix24_update_task',
+  description: 'Update an existing task in Bitrix24',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      id: { type: 'string', description: 'Task ID' },
+      title: { type: 'string', description: 'Task title' },
+      description: { type: 'string', description: 'Task description' },
+      responsibleId: { type: 'string', description: 'User ID responsible for the task' },
+      deadline: { type: 'string', description: 'Task deadline in ISO 8601 or Bitrix-compatible date format' },
+      priority: {
+        type: 'string',
+        enum: ['0', '1', '2'],
+        description: 'Task priority: 0=low, 1=normal, 2=high'
+      },
+      status: {
+        type: 'string',
+        enum: ['1', '2', '3', '4', '5'],
+        description: 'Task status: 1=new, 2=pending, 3=in progress, 4=completed, 5=deferred'
+      },
+      crmLinks: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'Optional CRM links for UF_CRM_TASK, for example ["D_123"], ["C_123"], ["CO_123"], or ["L_123"]'
+      }
+    },
+    required: ['id']
+  }
+};
+
 // AI Engine Tools
 export const registerAiEngineTool: Tool = {
   name: 'bitrix24_register_ai_engine',
@@ -1270,6 +1369,10 @@ export const allTools = [
   updateCompanyTool,
   getLatestCompaniesTool,
   getCompaniesFromDateRangeTool,
+  createTaskTool,
+  getTaskTool,
+  listTasksTool,
+  updateTaskTool,
   // AI Engine Tools
   registerAiEngineTool,
   listAiEnginesTool,
@@ -1534,6 +1637,48 @@ export async function executeToolCall(name: string, args: any): Promise<any> {
           args.limit || 50
         );
         return { success: true, companies: dateRangeCompanies };
+
+      case 'bitrix24_create_task':
+        const task: BitrixTask = {
+          TITLE: args.title,
+          DESCRIPTION: args.description,
+          RESPONSIBLE_ID: args.responsibleId,
+          DEADLINE: args.deadline,
+          PRIORITY: args.priority || '1',
+          STATUS: args.status,
+          UF_CRM_TASK: args.crmLinks
+        };
+        const taskId = await bitrix24Client.createTask(task);
+        return { success: true, taskId, message: `Task created with ID: ${taskId}` };
+
+      case 'bitrix24_get_task':
+        const taskData = await bitrix24Client.getTask(args.id);
+        return { success: true, task: taskData };
+
+      case 'bitrix24_list_tasks':
+        const taskOrder: Record<string, string> = {};
+        taskOrder[args.orderBy || 'CREATED_DATE'] = args.orderDirection || 'DESC';
+
+        const tasks = await bitrix24Client.listTasks({
+          start: 0,
+          filter: args.filter,
+          order: taskOrder,
+          select: ['*', 'UF_*']
+        });
+        return { success: true, tasks: tasks.slice(0, args.limit || 20) };
+
+      case 'bitrix24_update_task':
+        const updateTask: Partial<BitrixTask> = {};
+        if (args.title) updateTask.TITLE = args.title;
+        if (args.description) updateTask.DESCRIPTION = args.description;
+        if (args.responsibleId) updateTask.RESPONSIBLE_ID = args.responsibleId;
+        if (args.deadline) updateTask.DEADLINE = args.deadline;
+        if (args.priority) updateTask.PRIORITY = args.priority;
+        if (args.status) updateTask.STATUS = args.status;
+        if (args.crmLinks) updateTask.UF_CRM_TASK = args.crmLinks;
+
+        const taskUpdated = await bitrix24Client.updateTask(args.id, updateTask);
+        return { success: true, updated: taskUpdated, message: `Task ${args.id} updated successfully` };
 
       case 'bitrix24_register_ai_engine':
         const aiEngineId = await bitrix24Client.registerAiEngine({

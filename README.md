@@ -238,14 +238,14 @@ This is the same entry point used in production (`server.js` → `build/httpServ
 - `DELETE /mcp` — terminates a session
 - `GET /health` — health check
 
-**Connecting a client:** point any MCP client that supports Streamable HTTP at `https://your-server/mcp` with header `Authorization: Bearer <MCP_AUTH_TOKEN>`. Example with `mcp-remote` (for clients that only speak stdio, like older Claude Desktop configs):
+**Connecting a client:** point any MCP client that supports Streamable HTTP at `https://your-server/mcp/<MCP_AUTH_TOKEN>`. The server also accepts the legacy `Authorization: Bearer <MCP_AUTH_TOKEN>` header on `/mcp`. Example with `mcp-remote` (for clients that only speak stdio, like older Claude Desktop configs):
 
 ```json
 {
   "mcpServers": {
     "bitrix24": {
       "command": "npx",
-      "args": ["-y", "mcp-remote", "https://your-server/mcp", "--header", "Authorization: Bearer your-long-random-secret"]
+      "args": ["-y", "mcp-remote", "https://your-server/mcp/your-long-random-secret"]
     }
   }
 }
@@ -254,10 +254,9 @@ This is the same entry point used in production (`server.js` → `build/httpServ
 Quick manual test with `curl`:
 
 ```bash
-curl -i -X POST https://your-server/mcp \
+curl -i -X POST https://your-server/mcp/your-long-random-secret \
   -H 'Content-Type: application/json' \
   -H 'Accept: application/json, text/event-stream' \
-  -H 'Authorization: Bearer your-long-random-secret' \
   -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"curl","version":"1.0.0"}}}'
 ```
 

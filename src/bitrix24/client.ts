@@ -248,6 +248,10 @@ export class Bitrix24Client {
             Object.entries(value).forEach(([filterKey, filterValue]) => {
               body.append(`filter[${filterKey}]`, String(filterValue));
             });
+          } else if (Array.isArray(value)) {
+            value.forEach((item, index) => {
+              body.append(`${key}[${index}]`, String(item));
+            });
           } else if (typeof value === 'object' && value !== null) {
             body.append(key, JSON.stringify(value));
           } else if (value !== undefined && value !== null) {
@@ -730,17 +734,23 @@ export class Bitrix24Client {
   // Task Methods
   async createTask(task: BitrixTask): Promise<string> {
     const result = await this.makeRequest('tasks.task.add', { fields: task });
-    return result.task.id.toString();
+    const taskId = result?.task?.id ?? result?.task?.ID ?? result?.id ?? result?.ID;
+
+    if (!taskId) {
+      throw new Error(`Bitrix24 did not return a task ID: ${JSON.stringify(result)}`);
+    }
+
+    return taskId.toString();
   }
 
   async getTask(id: string): Promise<BitrixTask> {
     const result = await this.makeRequest('tasks.task.get', { taskId: id });
-    return result.task;
+    return result.task || result;
   }
 
   async updateTask(id: string, task: Partial<BitrixTask>): Promise<boolean> {
     const result = await this.makeRequest('tasks.task.update', { taskId: id, fields: task });
-    return result === true;
+    return result === true || Boolean(result?.task || result?.id || result?.ID);
   }
 
   async listTasks(params: { 
@@ -750,7 +760,7 @@ export class Bitrix24Client {
     start?: number;
   } = {}): Promise<BitrixTask[]> {
     const result = await this.makeRequest('tasks.task.list', params);
-    return result.tasks || [];
+    return result.tasks || (Array.isArray(result) ? result : []);
   }
 
   // Utility Methods

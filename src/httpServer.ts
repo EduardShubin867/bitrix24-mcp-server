@@ -18,7 +18,7 @@ const ALLOWED_ORIGINS = (process.env.MCP_ALLOWED_ORIGINS || '*')
 if (!AUTH_TOKEN) {
   console.error(
     'WARNING: MCP_AUTH_TOKEN is not set. The /mcp endpoint will accept unauthenticated requests. ' +
-    'Set MCP_AUTH_TOKEN to require a Bearer token before exposing this server publicly.'
+    'Set MCP_AUTH_TOKEN to require a Bearer token or /mcp/<token> URL token before exposing this server publicly.'
   );
 }
 
@@ -46,6 +46,18 @@ app.use((req: Request, res: Response, next: NextFunction) => {
   next();
 });
 
+function getSingleQueryValue(value: unknown): string | undefined {
+  if (typeof value === 'string') {
+    return value;
+  }
+
+  if (Array.isArray(value) && typeof value[0] === 'string') {
+    return value[0];
+  }
+
+  return undefined;
+}
+
 function requireAuth(req: Request, res: Response, next: NextFunction) {
   if (!AUTH_TOKEN) {
     next();
@@ -53,14 +65,17 @@ function requireAuth(req: Request, res: Response, next: NextFunction) {
   }
 
   const header = req.headers.authorization;
-  if (header === `Bearer ${AUTH_TOKEN}`) {
+  const pathToken = req.params.token;
+  const queryToken = getSingleQueryValue(req.query.token) || getSingleQueryValue(req.query.access_token);
+
+  if (header === `Bearer ${AUTH_TOKEN}` || pathToken === AUTH_TOKEN || queryToken === AUTH_TOKEN) {
     next();
     return;
   }
 
   res.status(401).json({
     jsonrpc: '2.0',
-    error: { code: -32001, message: 'Unauthorized: missing or invalid Bearer token' },
+    error: { code: -32001, message: 'Unauthorized: missing or invalid token' },
     id: null
   });
 }
@@ -79,7 +94,8 @@ app.get('/', (_req: Request, res: Response) => {
   res.json({
     name: 'bitrix24-mcp-server',
     transport: 'streamable-http',
-    endpoint: '/mcp',
+    endpoint: AUTH_TOKEN ? '/mcp/<token>' : '/mcp',
+    auth: AUTH_TOKEN ? 'Bearer token, /mcp/<token>, or ?token= query parameter' : 'disabled',
     tools: allTools.length
   });
 });
@@ -147,9 +163,9 @@ async function handleMcpSessionRequest(req: Request, res: Response) {
   await transport.handleRequest(req, res);
 }
 
-app.post('/mcp', requireAuth, handleMcpPost);
-app.get('/mcp', requireAuth, handleMcpSessionRequest);
-app.delete('/mcp', requireAuth, handleMcpSessionRequest);
+app.post(['/mcp', '/mcp/:token'], requireAuth, handleMcpPost);
+app.get(['/mcp', '/mcp/:token'], requireAuth, handleMcpSessionRequest);
+app.delete(['/mcp', '/mcp/:token'], requireAuth, handleMcpSessionRequest);
 
 const httpServer = app.listen(PORT, HOST, () => {
   console.error(`Bitrix24 MCP Server (Streamable HTTP) listening on http://${HOST}:${PORT}/mcp`);

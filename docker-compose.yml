@@ -2,6 +2,7 @@ services:
   bitrix24-mcp:
     build: .
     image: bitrix24-mcp-server
+    pull_policy: build
     container_name: bitrix24-mcp-server
     restart: unless-stopped
     env_file:
