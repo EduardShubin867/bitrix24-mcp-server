@@ -13,6 +13,7 @@
     "build:unix": "tsc && chmod +x build/index.js",
     "dev": "tsc --watch",
     "export:org-structure": "npm run build && node scripts/export-org-structure.mjs",
+    "debug:tools": "npm run build && node scripts/list-registered-tools.mjs",
     "smoke:task-tools": "npm run build && node scripts/smoke-task-tools.mjs",
     "start:mcp": "node build/index.js",
     "start:http": "node build/httpServer.js",

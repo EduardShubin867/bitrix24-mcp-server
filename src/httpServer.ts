@@ -7,6 +7,17 @@ import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 import { createMcpServer } from './mcpServer.js';
 import { allTools } from './tools/index.js';
 
+const REQUIRED_TASK_TOOL_NAMES = [
+  'bitrix24_get_current_user',
+  'bitrix24_search_users',
+  'bitrix24_list_my_tasks',
+  'bitrix24_list_tasks_by_user',
+  'bitrix24_get_task_full',
+  'bitrix24_get_task_messages',
+  'bitrix24_get_task_file_info',
+  'bitrix24_get_my_task_counters'
+];
+
 const PORT = Number(process.env.PORT) || 47365;
 const HOST = process.env.HOST || '0.0.0.0';
 const AUTH_TOKEN = process.env.MCP_AUTH_TOKEN;
@@ -87,6 +98,23 @@ app.get('/health', (_req: Request, res: Response) => {
     version: '1.0.0',
     transport: 'streamable-http',
     uptime: process.uptime()
+  });
+});
+
+app.get('/debug/tools', requireAuth, (_req: Request, res: Response) => {
+  const toolNames = allTools.map((tool) => tool.name);
+
+  res.json({
+    count: toolNames.length,
+    requiredTaskTools: {
+      present: REQUIRED_TASK_TOOL_NAMES.filter((toolName) => toolNames.includes(toolName)),
+      missing: REQUIRED_TASK_TOOL_NAMES.filter((toolName) => !toolNames.includes(toolName))
+    },
+    tools: allTools.map((tool) => ({
+      name: tool.name,
+      description: tool.description,
+      inputSchema: tool.inputSchema
+    }))
   });
 });
 

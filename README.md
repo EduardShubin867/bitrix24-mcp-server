@@ -391,9 +391,20 @@ npm test
 # Smoke-test task tools
 npm run smoke:task-tools
 
+# Print registered MCP tools and fail if required task tools are missing
+npm run debug:tools
+
 # Start the server
 npm start
 ```
+
+The Streamable HTTP server also exposes an authenticated debug endpoint:
+
+```bash
+curl http://localhost:47365/debug/tools
+```
+
+When `MCP_AUTH_TOKEN` is set, use `/debug/tools?token=<MCP_AUTH_TOKEN>` or `Authorization: Bearer <MCP_AUTH_TOKEN>`.
 
 ### Adding New Tools
 
