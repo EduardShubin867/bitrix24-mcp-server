@@ -176,6 +176,176 @@ function buildOrgStructure(departments: BitrixDepartment[], users: Record<string
   };
 }
 
+const ASSISTANT_DEFAULTS = {
+  currentUser: 'resolve via bitrix24_get_current_user',
+  defaultTaskRole: 'responsible',
+  defaultTaskOrderBy: 'DEADLINE',
+  defaultTaskOrderDirection: 'ASC',
+  includeCompletedByDefault: false,
+  includeDeferredByDefault: false,
+  maxDefaultLimit: 20,
+  avoidGetAllUsers: true
+};
+
+const TASK_STATUS_LABELS: Record<string, string> = {
+  '1': 'new',
+  '2': 'pending',
+  '3': 'in progress',
+  '4': 'completed',
+  '5': 'deferred',
+  '6': 'deferred'
+};
+
+function getTaskValue(task: Record<string, any>, ...keys: string[]): any {
+  for (const key of keys) {
+    if (task[key] !== undefined && task[key] !== null) {
+      return task[key];
+    }
+  }
+
+  return undefined;
+}
+
+function stripHtml(value: unknown): string {
+  return String(value || '')
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function getTaskId(task: Record<string, any>): string | undefined {
+  const id = getTaskValue(task, 'ID', 'id');
+  return id === undefined ? undefined : String(id);
+}
+
+function getTaskStatus(task: Record<string, any>): string | undefined {
+  const status = getTaskValue(task, 'REAL_STATUS', 'realStatus', 'real_status', 'STATUS', 'status');
+  return status === undefined ? undefined : String(status);
+}
+
+function getTaskDeadline(task: Record<string, any>): string | undefined {
+  const deadline = getTaskValue(task, 'DEADLINE', 'deadline');
+  return deadline === undefined || deadline === null || deadline === '' ? undefined : String(deadline);
+}
+
+function summarizeTask(task: Record<string, any>) {
+  const status = getTaskStatus(task);
+  const description = stripHtml(getTaskValue(task, 'DESCRIPTION', 'description'));
+  const parsedDescription = stripHtml(getTaskValue(task, 'parsedDescription', 'PARSED_DESCRIPTION'));
+
+  return {
+    id: getTaskId(task),
+    title: getTaskValue(task, 'TITLE', 'title') || '',
+    deadline: getTaskDeadline(task) || null,
+    status,
+    statusLabel: status ? TASK_STATUS_LABELS[status] || status : null,
+    priority: getTaskValue(task, 'PRIORITY', 'priority') || null,
+    group: getTaskValue(task, 'GROUP_NAME', 'groupName', 'group_name', 'GROUP_ID', 'groupId') || null,
+    responsibleId: getTaskValue(task, 'RESPONSIBLE_ID', 'responsibleId', 'responsible_id') || null,
+    shortDescription: (parsedDescription || description).slice(0, 240)
+  };
+}
+
+function buildTaskUpdatePayload(args: Record<string, any>): Partial<BitrixTask> {
+  const updateTask: Partial<BitrixTask> = {};
+
+  if (args.title !== undefined) updateTask.TITLE = args.title;
+  if (args.description !== undefined) updateTask.DESCRIPTION = args.description;
+  if (args.responsibleId !== undefined) updateTask.RESPONSIBLE_ID = args.responsibleId;
+  if (args.deadline !== undefined) updateTask.DEADLINE = args.deadline;
+  if (args.priority !== undefined) updateTask.PRIORITY = args.priority;
+  if (args.status !== undefined) updateTask.STATUS = args.status;
+  if (args.crmLinks !== undefined) updateTask.UF_CRM_TASK = args.crmLinks;
+
+  return updateTask;
+}
+
+function diffTaskFields(before: Record<string, any>, update: Partial<BitrixTask>) {
+  const fieldMap: Record<string, string[]> = {
+    TITLE: ['TITLE', 'title'],
+    DESCRIPTION: ['DESCRIPTION', 'description'],
+    RESPONSIBLE_ID: ['RESPONSIBLE_ID', 'responsibleId', 'responsible_id'],
+    DEADLINE: ['DEADLINE', 'deadline'],
+    PRIORITY: ['PRIORITY', 'priority'],
+    STATUS: ['STATUS', 'status'],
+    UF_CRM_TASK: ['UF_CRM_TASK', 'ufCrmTask', 'uf_crm_task']
+  };
+
+  return Object.fromEntries(
+    Object.entries(update).map(([field, after]) => [
+      field,
+      {
+        before: getTaskValue(before, ...(fieldMap[field] || [field])),
+        after
+      }
+    ])
+  );
+}
+
+function buildAssistantGuide() {
+  return {
+    purpose: 'Bitrix24 assistant guide for ChatGPT',
+    defaults: ASSISTANT_DEFAULTS,
+    workflows: {
+      myTasks: {
+        triggers: ['мои задачи', 'задачи на мне', 'что на мне висит'],
+        tool: 'bitrix24_list_my_tasks',
+        args: { role: 'responsible', includeCompleted: false, includeDeferred: false }
+      },
+      createTaskForMe: {
+        triggers: ['создай задачу на меня', 'закинь мне задачу'],
+        tool: 'bitrix24_create_task_for_current_user'
+      },
+      openTask: {
+        triggers: ['открой задачу 123'],
+        tool: 'bitrix24_get_task_full',
+        args: { taskId: '<taskId>' }
+      },
+      taskChat: {
+        triggers: ['чат задачи 123', 'комменты задачи 123'],
+        tool: 'bitrix24_get_task_messages',
+        args: { taskId: '<taskId>' }
+      },
+      updateTask: {
+        rule: 'Use bitrix24_update_task_safe, or bitrix24_update_task only after explicit user instruction.'
+      },
+      userLookup: {
+        preferred: 'bitrix24_search_users',
+        avoid: 'bitrix24_get_all_users unless user explicitly asks for broad user export'
+      }
+    },
+    safetyRules: [
+      'Never create/update/delete tasks unless the user explicitly asks.',
+      'For destructive or status-changing actions, return a preview/dryRun unless user clearly says "сделай", "обнови", "закрой", "создай".',
+      'Do not expose unnecessary user emails or avatars in summaries.',
+      'Summaries should show task ID, title, deadline, status, group, short description.'
+    ],
+    preferredTools: {
+      currentUser: 'bitrix24_get_current_user',
+      myTasks: 'bitrix24_list_my_tasks',
+      createTaskForCurrentUser: 'bitrix24_create_task_for_current_user',
+      safeTaskUpdate: 'bitrix24_update_task_safe',
+      taskDetails: 'bitrix24_get_task_full',
+      taskComments: 'bitrix24_get_task_messages',
+      userLookup: 'bitrix24_search_users'
+    },
+    examples: [
+      {
+        user: 'Покажи мои задачи',
+        call: { tool: 'bitrix24_list_my_tasks', args: { role: 'responsible', includeCompleted: false, includeDeferred: false, limit: 20 } }
+      },
+      {
+        user: 'Создай задачу на меня: проверить договор',
+        call: { tool: 'bitrix24_create_task_for_current_user', args: { title: 'Проверить договор' } }
+      },
+      {
+        user: 'Что изменится, если закрыть задачу 123?',
+        call: { tool: 'bitrix24_complete_task', args: { taskId: '123', dryRun: true } }
+      }
+    ]
+  };
+}
+
 // Contact Management Tools
 export const createContactTool: Tool = {
   name: 'bitrix24_create_contact',
@@ -563,7 +733,7 @@ export const getCompaniesFromDateRangeTool: Tool = {
 // Task Management Tools
 export const createTaskTool: Tool = {
   name: 'bitrix24_create_task',
-  description: 'Create a new task in Bitrix24',
+  description: 'Create a new Bitrix24 task when the assignee is known. If the user says "создай задачу на меня", prefer bitrix24_create_task_for_current_user so responsibleId is resolved safely from user.current. Defaults priority to 1; status supports 1=new, 2=pending, 3=in progress, 4=completed, 5=deferred.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -630,7 +800,7 @@ export const listTasksTool: Tool = {
 
 export const updateTaskTool: Tool = {
   name: 'bitrix24_update_task',
-  description: 'Update an existing task in Bitrix24',
+  description: 'Update an existing task directly after explicit user instruction. For previews, ambiguous requests, or safer edits, prefer bitrix24_update_task_safe with dryRun=true first. Status values: 1=new, 2=pending, 3=in progress, 4=completed, 5=deferred.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -661,7 +831,7 @@ export const updateTaskTool: Tool = {
 
 export const getCurrentUserTool: Tool = {
   name: 'bitrix24_get_current_user',
-  description: 'Get current Bitrix24 user using user.current',
+  description: 'Resolve the current Bitrix24 user via user.current. Use this instead of broad user export when interpreting "я", "мои задачи", or creating a task for the current user.',
   inputSchema: {
     type: 'object',
     properties: {}
@@ -685,7 +855,7 @@ export const searchUsersTool: Tool = {
 
 export const listMyTasksTool: Tool = {
   name: 'bitrix24_list_my_tasks',
-  description: 'List tasks assigned to current Bitrix24 user',
+  description: 'List current user tasks. Preferred for "мои задачи", "задачи на мне", "что на мне висит"; default role should be responsible, includeCompleted=false, includeDeferred=false, order by DEADLINE ASC. Do not use bitrix24_get_all_users for this.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -751,7 +921,7 @@ export const listTasksByUserTool: Tool = {
 
 export const getTaskFullTool: Tool = {
   name: 'bitrix24_get_task_full',
-  description: 'Get full task info by ID with CRM links, task attachments, chat ID, optional messages, and optional files',
+  description: 'Open a task by ID with full details, CRM links, attachments, chat ID, optional messages, and optional files. Use when the user says "открой задачу 123" or needs task context before summarizing/updating.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -805,6 +975,141 @@ export const getMyTaskCountersTool: Tool = {
       },
       groupId: { type: 'number', description: 'Bitrix24 group ID, 0 for all groups', default: 0 }
     }
+  }
+};
+
+export const getAssistantGuideTool: Tool = {
+  name: 'bitrix24_get_assistant_guide',
+  description: 'Return compact operational guide for ChatGPT on how to use this Bitrix24 MCP server.',
+  inputSchema: {
+    type: 'object',
+    properties: {}
+  }
+};
+
+export const createTaskForCurrentUserTool: Tool = {
+  name: 'bitrix24_create_task_for_current_user',
+  description: 'Create a task assigned to the current Bitrix24 user. Preferred when user says "создай задачу на меня" or "закинь мне задачу"; resolves responsibleId via user.current and supports dryRun preview.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      title: { type: 'string', description: 'Task title' },
+      description: { type: 'string', description: 'Task description' },
+      deadline: { type: 'string', description: 'Task deadline in ISO 8601 or Bitrix-compatible date format' },
+      priority: {
+        type: 'string',
+        enum: ['0', '1', '2'],
+        description: 'Task priority: 0=low, 1=normal, 2=high',
+        default: '1'
+      },
+      status: {
+        type: 'string',
+        enum: ['1', '2', '3', '4', '5'],
+        description: 'Task status: 1=new, 2=pending, 3=in progress, 4=completed, 5=deferred',
+        default: '2'
+      },
+      crmLinks: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'Optional CRM links for UF_CRM_TASK, for example ["D_123"], ["C_123"], ["CO_123"], or ["L_123"]'
+      },
+      dryRun: { type: 'boolean', description: 'Return planned payload without creating the task', default: false }
+    },
+    required: ['title']
+  }
+};
+
+export const updateTaskSafeTool: Tool = {
+  name: 'bitrix24_update_task_safe',
+  description: 'Safely update a Bitrix24 task with optional dryRun preview. Use for edits unless the user explicitly requested direct bitrix24_update_task.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      taskId: { type: 'string', description: 'Task ID' },
+      title: { type: 'string', description: 'Task title' },
+      description: { type: 'string', description: 'Task description' },
+      responsibleId: { type: 'string', description: 'User ID responsible for the task' },
+      deadline: { type: 'string', description: 'Task deadline in ISO 8601 or Bitrix-compatible date format' },
+      priority: {
+        type: 'string',
+        enum: ['0', '1', '2'],
+        description: 'Task priority: 0=low, 1=normal, 2=high'
+      },
+      status: {
+        type: 'string',
+        enum: ['1', '2', '3', '4', '5'],
+        description: 'Task status: 1=new, 2=pending, 3=in progress, 4=completed, 5=deferred'
+      },
+      crmLinks: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'Optional CRM links for UF_CRM_TASK, for example ["D_123"], ["C_123"], ["CO_123"], or ["L_123"]'
+      },
+      dryRun: { type: 'boolean', description: 'Return before/after diff without updating the task', default: false }
+    },
+    required: ['taskId']
+  }
+};
+
+export const findMyTasksTool: Tool = {
+  name: 'bitrix24_find_my_tasks',
+  description: 'Search current user tasks by text in title, description, or parsedDescription. Uses bitrix24_list_my_tasks semantics and avoids broad user export.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      query: { type: 'string', description: 'Text to search in task title and description' },
+      includeCompleted: { type: 'boolean', description: 'Include completed tasks', default: false },
+      includeDeferred: { type: 'boolean', description: 'Include deferred tasks', default: false },
+      role: {
+        type: 'string',
+        enum: ['responsible', 'accomplice', 'auditor', 'originator'],
+        description: 'Task role filter for the current user',
+        default: 'responsible'
+      },
+      limit: { type: 'number', description: 'Maximum matching tasks to return', default: 20 }
+    },
+    required: ['query']
+  }
+};
+
+export const getMyWorkSummaryTool: Tool = {
+  name: 'bitrix24_get_my_work_summary',
+  description: 'Return compact summary of current user active tasks grouped by overdue, due today, due this week, no deadline, and in progress.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      limit: { type: 'number', description: 'Maximum tasks to fetch and summarize', default: 20 },
+      includeOverdue: { type: 'boolean', description: 'Include overdue tasks group', default: true },
+      includeUpcoming: { type: 'boolean', description: 'Include due today and due this week groups', default: true },
+      includeNoDeadline: { type: 'boolean', description: 'Include tasks without deadline group', default: true }
+    }
+  }
+};
+
+export const completeTaskTool: Tool = {
+  name: 'bitrix24_complete_task',
+  description: 'Mark a task as completed using the current update wrapper status=4. Supports dryRun preview for status-changing actions.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      taskId: { type: 'string', description: 'Task ID' },
+      dryRun: { type: 'boolean', description: 'Return planned completion update without changing the task', default: false }
+    },
+    required: ['taskId']
+  }
+};
+
+export const addTaskCommentTool: Tool = {
+  name: 'bitrix24_add_task_comment',
+  description: 'Add a comment/message to a task via task.commentitem.add when available. Returns a clear error if the Bitrix portal or webhook does not support comment creation.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      taskId: { type: 'string', description: 'Task ID' },
+      message: { type: 'string', description: 'Comment text to add to the task' },
+      dryRun: { type: 'boolean', description: 'Return planned comment without adding it', default: false }
+    },
+    required: ['taskId', 'message']
   }
 };
 
@@ -1565,6 +1870,13 @@ export const allTools = [
   getTaskMessagesTool,
   getTaskFileInfoTool,
   getMyTaskCountersTool,
+  getAssistantGuideTool,
+  createTaskForCurrentUserTool,
+  updateTaskSafeTool,
+  findMyTasksTool,
+  getMyWorkSummaryTool,
+  completeTaskTool,
+  addTaskCommentTool,
   // AI Engine Tools
   registerAiEngineTool,
   listAiEnginesTool,
@@ -1962,6 +2274,272 @@ export async function executeToolCall(name: string, args: any): Promise<any> {
           groupId: args.groupId
         });
         return { success: true, data: counters, counters, message: 'Task counters retrieved for current user' };
+
+      case 'bitrix24_get_assistant_guide':
+        return {
+          success: true,
+          guide: buildAssistantGuide()
+        };
+
+      case 'bitrix24_create_task_for_current_user':
+        if (!args.title) return missingArgumentResponse('title');
+        const taskCurrentUser = await bitrix24Client.getCurrentUser();
+        const taskCurrentUserId = taskCurrentUser.ID ?? taskCurrentUser.id;
+
+        if (!taskCurrentUserId) {
+          return {
+            success: false,
+            error: 'NO_AUTH_FOUND',
+            message: 'Bitrix24 did not return current user ID'
+          };
+        }
+
+        const currentUserTask: BitrixTask = {
+          TITLE: args.title,
+          DESCRIPTION: args.description,
+          RESPONSIBLE_ID: String(taskCurrentUserId),
+          DEADLINE: args.deadline,
+          PRIORITY: args.priority || '1',
+          STATUS: args.status || '2',
+          UF_CRM_TASK: args.crmLinks
+        };
+
+        if (args.dryRun === true) {
+          return {
+            success: true,
+            dryRun: true,
+            plannedPayload: currentUserTask,
+            currentUser: taskCurrentUser,
+            summary: summarizeTask(currentUserTask as Record<string, any>),
+            message: 'Dry run: task was not created'
+          };
+        }
+
+        const currentUserTaskId = await bitrix24Client.createTask(currentUserTask);
+        const createdCurrentUserTask = await bitrix24Client.getTask(currentUserTaskId, ['*', 'UF_CRM_TASK']);
+        return {
+          success: true,
+          taskId: currentUserTaskId,
+          currentUser: taskCurrentUser,
+          task: createdCurrentUserTask,
+          summary: summarizeTask(createdCurrentUserTask as Record<string, any>),
+          message: `Task created for current user with ID: ${currentUserTaskId}`
+        };
+
+      case 'bitrix24_update_task_safe':
+        if (!args.taskId) return missingArgumentResponse('taskId');
+        const safeUpdatePayload = buildTaskUpdatePayload(args);
+
+        if (Object.keys(safeUpdatePayload).length === 0) {
+          return {
+            success: false,
+            error: 'missing update fields',
+            message: 'At least one update field is required'
+          };
+        }
+
+        const safeTaskBefore = await bitrix24Client.getTask(String(args.taskId), ['*', 'UF_CRM_TASK']);
+
+        if (args.dryRun === true) {
+          return {
+            success: true,
+            dryRun: true,
+            taskId: String(args.taskId),
+            before: summarizeTask(safeTaskBefore as Record<string, any>),
+            diff: diffTaskFields(safeTaskBefore as Record<string, any>, safeUpdatePayload),
+            plannedPayload: safeUpdatePayload,
+            message: 'Dry run: task was not updated'
+          };
+        }
+
+        const safeTaskUpdated = await bitrix24Client.updateTask(String(args.taskId), safeUpdatePayload);
+        const safeTaskAfter = await bitrix24Client.getTask(String(args.taskId), ['*', 'UF_CRM_TASK']);
+        return {
+          success: true,
+          updated: safeTaskUpdated,
+          taskId: String(args.taskId),
+          task: safeTaskAfter,
+          summary: summarizeTask(safeTaskAfter as Record<string, any>),
+          diff: diffTaskFields(safeTaskBefore as Record<string, any>, safeUpdatePayload),
+          message: `Task ${args.taskId} updated successfully`
+        };
+
+      case 'bitrix24_find_my_tasks':
+        if (!args.query) return missingArgumentResponse('query');
+        const findLimit = Math.min(Math.max(Number(args.limit || 20), 1), 200);
+        const findMyTasksResult = await bitrix24Client.listMyTasks({
+          includeCompleted: args.includeCompleted,
+          includeDeferred: args.includeDeferred,
+          role: args.role || 'responsible',
+          limit: Math.max(findLimit, 100),
+          orderBy: 'DEADLINE',
+          orderDirection: 'ASC'
+        });
+        const normalizedQuery = String(args.query).toLowerCase().trim();
+        const matchingTasks = findMyTasksResult.tasks
+          .filter((candidate) => {
+            const record = candidate as Record<string, any>;
+            const haystack = [
+              getTaskValue(record, 'TITLE', 'title'),
+              getTaskValue(record, 'DESCRIPTION', 'description'),
+              getTaskValue(record, 'parsedDescription', 'PARSED_DESCRIPTION')
+            ].map(stripHtml).join(' ').toLowerCase();
+
+            return haystack.includes(normalizedQuery);
+          })
+          .slice(0, findLimit)
+          .map((candidate) => summarizeTask(candidate as Record<string, any>));
+
+        return {
+          success: true,
+          query: args.query,
+          currentUser: findMyTasksResult.currentUser,
+          matches: matchingTasks,
+          count: matchingTasks.length,
+          message: `Found ${matchingTasks.length} matching tasks for current user`
+        };
+
+      case 'bitrix24_get_my_work_summary':
+        const summaryLimit = Math.min(Math.max(Number(args.limit || 20), 1), 200);
+        const workTasksResult = await bitrix24Client.listMyTasks({
+          includeCompleted: false,
+          includeDeferred: false,
+          role: 'responsible',
+          limit: summaryLimit,
+          orderBy: 'DEADLINE',
+          orderDirection: 'ASC'
+        });
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        const tomorrow = new Date(today);
+        tomorrow.setDate(tomorrow.getDate() + 1);
+        const nextWeek = new Date(today);
+        nextWeek.setDate(nextWeek.getDate() + 7);
+        const compactTasks = workTasksResult.tasks.map((candidate) => summarizeTask(candidate as Record<string, any>));
+        const taskGroups = {
+          overdue: [] as ReturnType<typeof summarizeTask>[],
+          dueToday: [] as ReturnType<typeof summarizeTask>[],
+          dueThisWeek: [] as ReturnType<typeof summarizeTask>[],
+          noDeadline: [] as ReturnType<typeof summarizeTask>[],
+          inProgress: [] as ReturnType<typeof summarizeTask>[]
+        };
+
+        for (const compactTask of compactTasks) {
+          const deadline = compactTask.deadline ? new Date(compactTask.deadline) : null;
+          const hasValidDeadline = deadline instanceof Date && !Number.isNaN(deadline.getTime());
+
+          if (compactTask.status === '3') {
+            taskGroups.inProgress.push(compactTask);
+          }
+
+          if (!hasValidDeadline) {
+            taskGroups.noDeadline.push(compactTask);
+            continue;
+          }
+
+          if (deadline! < today) {
+            taskGroups.overdue.push(compactTask);
+          } else if (deadline! >= today && deadline! < tomorrow) {
+            taskGroups.dueToday.push(compactTask);
+          } else if (deadline! >= tomorrow && deadline! <= nextWeek) {
+            taskGroups.dueThisWeek.push(compactTask);
+          }
+        }
+
+        const includeOverdue = args.includeOverdue !== false;
+        const includeUpcoming = args.includeUpcoming !== false;
+        const includeNoDeadline = args.includeNoDeadline !== false;
+        const includedGroups = {
+          overdue: includeOverdue ? taskGroups.overdue : [],
+          dueToday: includeUpcoming ? taskGroups.dueToday : [],
+          dueThisWeek: includeUpcoming ? taskGroups.dueThisWeek : [],
+          noDeadline: includeNoDeadline ? taskGroups.noDeadline : [],
+          inProgress: taskGroups.inProgress
+        };
+        const workSummaryText = [
+          `Active tasks: ${compactTasks.length}`,
+          includeOverdue ? `overdue: ${includedGroups.overdue.length}` : null,
+          includeUpcoming ? `due today: ${includedGroups.dueToday.length}` : null,
+          includeUpcoming ? `due this week: ${includedGroups.dueThisWeek.length}` : null,
+          includeNoDeadline ? `no deadline: ${includedGroups.noDeadline.length}` : null,
+          `in progress: ${includedGroups.inProgress.length}`
+        ].filter(Boolean).join('; ');
+
+        return {
+          success: true,
+          currentUser: workTasksResult.currentUser,
+          summary: {
+            totalActive: compactTasks.length,
+            generatedAt: new Date().toISOString(),
+            groups: includedGroups
+          },
+          text: workSummaryText,
+          message: 'Current user work summary generated'
+        };
+
+      case 'bitrix24_complete_task':
+        if (!args.taskId) return missingArgumentResponse('taskId');
+        const completePayload: Partial<BitrixTask> = { STATUS: '4' };
+        const completeTaskBefore = await bitrix24Client.getTask(String(args.taskId), ['*', 'UF_CRM_TASK']);
+
+        if (args.dryRun === true) {
+          return {
+            success: true,
+            dryRun: true,
+            taskId: String(args.taskId),
+            before: summarizeTask(completeTaskBefore as Record<string, any>),
+            diff: diffTaskFields(completeTaskBefore as Record<string, any>, completePayload),
+            plannedPayload: completePayload,
+            message: 'Dry run: task was not completed'
+          };
+        }
+
+        const completeUpdated = await bitrix24Client.updateTask(String(args.taskId), completePayload);
+        const completeTaskAfter = await bitrix24Client.getTask(String(args.taskId), ['*', 'UF_CRM_TASK']);
+        return {
+          success: true,
+          updated: completeUpdated,
+          taskId: String(args.taskId),
+          task: completeTaskAfter,
+          summary: summarizeTask(completeTaskAfter as Record<string, any>),
+          diff: diffTaskFields(completeTaskBefore as Record<string, any>, completePayload),
+          message: `Task ${args.taskId} marked as completed`
+        };
+
+      case 'bitrix24_add_task_comment':
+        if (!args.taskId) return missingArgumentResponse('taskId');
+        if (!args.message) return missingArgumentResponse('message');
+
+        if (args.dryRun === true) {
+          return {
+            success: true,
+            dryRun: true,
+            taskId: String(args.taskId),
+            plannedPayload: {
+              TASKID: String(args.taskId),
+              fields: {
+                POST_MESSAGE: args.message
+              }
+            },
+            message: 'Dry run: comment was not added'
+          };
+        }
+
+        try {
+          const addedComment = await bitrix24Client.addTaskComment(String(args.taskId), String(args.message));
+          return {
+            success: true,
+            taskId: String(args.taskId),
+            comment: addedComment,
+            message: `Comment added to task ${args.taskId}`
+          };
+        } catch (commentError) {
+          const formatted = formatToolError(commentError);
+          return {
+            ...formatted,
+            message: `${formatted.message}. Task comment creation through task.commentitem.add is not available or not permitted for this Bitrix24 portal/webhook.`
+          };
+        }
 
       case 'bitrix24_register_ai_engine':
         const aiEngineId = await bitrix24Client.registerAiEngine({

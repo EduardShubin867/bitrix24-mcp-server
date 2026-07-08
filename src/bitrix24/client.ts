@@ -1135,6 +1135,15 @@ export class Bitrix24Client {
     };
   }
 
+  async addTaskComment(taskId: string, message: string): Promise<any> {
+    return await this.makeRequest('task.commentitem.add', {
+      TASKID: taskId,
+      fields: {
+        POST_MESSAGE: message
+      }
+    });
+  }
+
   // Utility Methods
   async getCurrentUser(): Promise<any> {
     const user = await this.makeRequest('user.current');

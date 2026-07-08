@@ -8,7 +8,14 @@ const requiredTaskTools = [
   'bitrix24_get_task_full',
   'bitrix24_get_task_messages',
   'bitrix24_get_task_file_info',
-  'bitrix24_get_my_task_counters'
+  'bitrix24_get_my_task_counters',
+  'bitrix24_get_assistant_guide',
+  'bitrix24_create_task_for_current_user',
+  'bitrix24_update_task_safe',
+  'bitrix24_find_my_tasks',
+  'bitrix24_get_my_work_summary',
+  'bitrix24_complete_task',
+  'bitrix24_add_task_comment'
 ];
 
 const toolNames = allTools.map((tool) => tool.name);
