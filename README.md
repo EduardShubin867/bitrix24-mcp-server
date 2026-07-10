@@ -37,6 +37,14 @@ A comprehensive Model Context Protocol (MCP) server for Bitrix24 CRM integration
 - `bitrix24_get_task_file_info` - Get Bitrix24 Disk file metadata and download URL
 - `bitrix24_get_my_task_counters` - Get task counters for the current user
 
+### Task Checklists
+- `bitrix_task_checklist_list`, `bitrix_task_checklist_get` - Read normalized checklist items
+- `bitrix_task_checklist_add`, `bitrix_task_checklist_update`, `bitrix_task_checklist_delete` - Manage checklist items
+- `bitrix_task_checklist_complete`, `bitrix_task_checklist_reopen` - Change completion state
+- `bitrix_task_checklist_move` - Move an item after another item
+- `bitrix_task_checklist_actions` - Check add/modify/remove/toggle/reorder permissions
+- `bitrix_task_checklist_sync` - Safely merge or synchronize a complete checklist
+
 ### User Management
 - `bitrix24_get_current_user` - Get current Bitrix24 user via `user.current`
 - `bitrix24_search_users` - Search active employees by query, email, or name
@@ -238,6 +246,42 @@ Environment variables (see `.env.example`):
 | `MCP_ALLOWED_ORIGINS` | `*` | Comma-separated list of allowed CORS origins |
 
 This is the same entry point used in production (`server.js` → `build/httpServer.js`), so it works as-is behind IIS/Azure (`web.config`) or any reverse proxy (nginx, Caddy, etc.) — just proxy `/mcp` and `/health` to the Node process's port.
+
+The exact MCP endpoint is `http://HOST:PORT/mcp` (or `http://HOST:PORT/mcp/<MCP_AUTH_TOKEN>` when URL-token authentication is chosen). Send `Authorization: Bearer <MCP_AUTH_TOKEN>` when the token is configured. Streamable HTTP clients must first call `initialize`, retain the returned `Mcp-Session-Id`, then use that header for `tools/list` and `tools/call`.
+
+Example JSON-RPC requests after initialization:
+
+```json
+{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}
+```
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "method": "tools/call",
+  "params": {
+    "name": "bitrix_task_checklist_sync",
+    "arguments": {
+      "task_id": 253928,
+      "mode": "sync",
+      "match_by": "id_or_title",
+      "delete_missing": true,
+      "confirm_delete": true,
+      "dry_run": true,
+      "items": [
+        {"title": "Зафиксировать требования и состав MVP", "completed": true, "sort": 100},
+        {"title": "Подготовить и нормализовать PostgreSQL-схему", "completed": true, "sort": 200},
+        {"title": "Актуализировать дизайн под утверждённую логику Objective и KR", "completed": false, "sort": 300}
+      ]
+    }
+  }
+}
+```
+
+Always run `bitrix_task_checklist_sync` with `dry_run: true` before a mutating call. Its default mode is `merge`; `delete_missing` defaults to `false`, so no existing items are removed unless both `mode: "sync"` and `delete_missing: true` are specified. Synchronization refuses to delete more than five items unless `confirm_delete: true` is also supplied.
+
+`bitrix_task_checklist_move` accepts `after_item_id` because Bitrix24's `task.checklistitem.moveafteritem` requires an existing item ID. Its API has no documented value for moving to the first position; use `sort_index` / `sort` during add, update, or sync for that case.
 
 **Endpoints:**
 - `POST /mcp` — send JSON-RPC requests (the client sends an `initialize` request first with no `Mcp-Session-Id` header; the server returns one to reuse on subsequent requests)

@@ -452,6 +452,15 @@ export class Bitrix24Client {
     }
   }
 
+  /**
+   * Shared typed REST entry point for focused API adapters. It deliberately
+   * keeps authentication, rate limiting, request encoding and error handling
+   * inside this client instead of allowing tools to issue HTTP requests.
+   */
+  async callRest<T = unknown>(method: string, params: Record<string, unknown> = {}): Promise<T> {
+    return this.makeRequest(method, params) as Promise<T>;
+  }
+
   // CRM Contact Methods
   async createContact(contact: BitrixContact): Promise<string> {
     const result = await this.makeRequest('crm.contact.add', { fields: contact });

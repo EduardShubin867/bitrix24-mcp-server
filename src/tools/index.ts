@@ -1,5 +1,6 @@
 import { Tool } from '@modelcontextprotocol/sdk/types.js';
 import { bitrix24Client, Bitrix24ClientError, BitrixAiEngineCategory, BitrixContact, BitrixDeal, BitrixTask, BitrixLead, BitrixCompany, BitrixDepartment } from '../bitrix24/client.js';
+import { checklistTools, executeChecklistToolCall } from './tasks/checklist-tools.js';
 
 type OrgUser = {
   id: string;
@@ -1918,12 +1919,18 @@ export const allTools = [
   getContactsWithUserNamesTool,
   getDealsWithUserNamesTool,
   getLeadsWithUserNamesTool,
-  getCompaniesWithUserNamesTool
+  getCompaniesWithUserNamesTool,
+  ...checklistTools
 ];
 
 // Tool execution handlers
 export async function executeToolCall(name: string, args: any): Promise<any> {
   try {
+    const checklistResult = await executeChecklistToolCall(name, args, bitrix24Client);
+    if (checklistResult !== undefined) {
+      return checklistResult;
+    }
+
     switch (name) {
       case 'bitrix24_create_contact':
         const contact: BitrixContact = {

@@ -25,6 +25,13 @@ const REQUIRED_TASK_TOOL_NAMES = [
   'bitrix24_add_task_comment'
 ];
 
+const REQUIRED_CHECKLIST_TOOL_NAMES = [
+  'bitrix_task_checklist_list', 'bitrix_task_checklist_get', 'bitrix_task_checklist_add',
+  'bitrix_task_checklist_update', 'bitrix_task_checklist_delete', 'bitrix_task_checklist_complete',
+  'bitrix_task_checklist_reopen', 'bitrix_task_checklist_move', 'bitrix_task_checklist_actions',
+  'bitrix_task_checklist_sync'
+];
+
 const PORT = Number(process.env.PORT) || 47365;
 const HOST = process.env.HOST || '0.0.0.0';
 const AUTH_TOKEN = process.env.MCP_AUTH_TOKEN;
@@ -110,6 +117,10 @@ function getHttpToolRegistrySnapshot() {
     requiredTaskTools: {
       present: REQUIRED_TASK_TOOL_NAMES.filter((toolName) => tools.includes(toolName)),
       missing: REQUIRED_TASK_TOOL_NAMES.filter((toolName) => !tools.includes(toolName))
+    },
+    requiredChecklistTools: {
+      present: REQUIRED_CHECKLIST_TOOL_NAMES.filter((toolName) => tools.includes(toolName)),
+      missing: REQUIRED_CHECKLIST_TOOL_NAMES.filter((toolName) => !tools.includes(toolName))
     },
     tools,
     toolSchemas: allTools.map((tool) => ({

@@ -19,6 +19,8 @@
     "start:http": "node build/httpServer.js",
     "start": "node server.js",
     "test": "node test/integration.test.js",
+    "test:checklist": "npm run build && node test/checklist.test.mjs",
+    "test:http-checklist": "npm run build && node test/http-checklist.test.mjs",
     "postinstall": "node -e \"try { require('child_process').execSync('npm run build', {stdio: 'inherit'}); } catch(e) { console.log('Build failed, but continuing...'); }\"",
     "azure:start": "node server.js"
   },
